@@ -26,6 +26,7 @@ from data import (
     detect_csv_options,
     read_csv,
 )
+from export_kml import export_kmz_bytes
 from mapview import build_map
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -78,6 +79,7 @@ def main() -> None:
 
     canon = build_canonical(df, cfg)
     _render_status_metrics(canon)
+    _sidebar_export_buttons(canon, cfg, source_name)
 
     if (canon["_status"] == STATUS_OK).sum() > 0:
         m = build_map(canon, cfg, selected_basemap=basemap)
@@ -195,6 +197,22 @@ def _sidebar_save_button(cfg: Config, config_path: Path) -> None:
     if st.sidebar.button("💾 Save config to disk"):
         save_config(cfg, config_path)
         st.sidebar.success(f"Saved `{config_path.relative_to(PROJECT_ROOT)}`.")
+
+
+def _sidebar_export_buttons(canon: pd.DataFrame, cfg: Config, source_name: str) -> None:
+    st.sidebar.header("Export")
+    n_ok = int((canon["_status"] == STATUS_OK).sum())
+    if n_ok == 0:
+        st.sidebar.caption("No rows to export yet.")
+        return
+    kmz_bytes = export_kmz_bytes(canon, cfg)
+    st.sidebar.download_button(
+        label=f"⬇️ Download KMZ ({n_ok} points)",
+        data=kmz_bytes,
+        file_name=Path(source_name).stem + ".kmz",
+        mime="application/vnd.google-earth.kmz",
+        key="dl_kmz",
+    )
 
 
 def _render_status_metrics(canon: pd.DataFrame) -> None:
