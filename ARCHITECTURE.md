@@ -44,19 +44,59 @@ Canonical in-memory representation (pandas DataFrame):
 - Rows with neither coords nor address → flagged as errors in a sidebar table, not silently dropped.
 - Column mapping is **configurable** via the UI (dropdown per canonical field) so future CSVs with different headers work.
 
-## 4. Symbology config
+## 4. Dataset config (column mapping + symbology)
 
-- Stored as `config/categories.csv`:
-  ```
-  category,label,color,icon
-  1,Status 1,#d62728,home
-  2,Status 2,#ff7f0e,star
-  …
-  ```
-- Example data has categories **1–6** (not 1–4 as originally described). The app supports any integer or string category; missing categories fall back to a default gray circle.
-- Edited in-app via a table editor (`st.data_editor`). Save button writes `config/categories.csv`; load button reads it.
-- Color = hex. Icon = FontAwesome name (from a curated shortlist to keep the UI sane; user can still type any valid fa name).
-- **Legend**: deferred to v2.
+One **JSON config per input CSV**, stored in `config/<name>.json` and committed to git (it's mapping logic, not data). The app offers to load an existing config on upload, or to create a fresh one seeded with best-guess column matches.
+
+```json
+{
+  "name": "Adressen Pöcking",
+  "source_file": "Example-Adressen-Kategorien.csv",
+  "csv_options": {
+    "delimiter": ";",
+    "encoding": "utf-8"
+  },
+  "columns": {
+    "id": "Schlüssel",
+    "label": "Adresse kurz",
+    "latlong": "latlong",
+    "lat": null,
+    "lon": null,
+    "address": "Adresse komplett",
+    "category": "Kategorie"
+  },
+  "hover_columns": ["Adresse kurz", "PLZ", "Ort", "Kategorie"],
+  "categories": [
+    {"value": "1", "label": "Status 1", "color": "#d62728", "icon": "home"},
+    {"value": "2", "label": "Status 2", "color": "#ff7f0e", "icon": "star"}
+  ],
+  "default_style": {"color": "#888888", "icon": "circle"}
+}
+```
+
+**Rules**
+
+- **No built-in default categories.** The app displays whatever the config specifies. A fresh config starts with an empty `categories` list.
+- **Coordinate source is flexible**: loader prefers `latlong` (combined `"lat,lon"` string) → `lat`+`lon` (separate numeric columns) → `address` (geocoded). Only one of the three needs to be present per row.
+- `hover_columns` is an ordered list — displayed in that order in the marker popup.
+- `categories[].value` is a string (so `"1"`, `"1a"`, `"high"` all work).
+- `default_style` renders rows whose category isn't in the list — prevents unknown categories from breaking the view.
+- `csv_options` only override autodetection when needed; usually omittable.
+
+**UI editing**
+
+Three sections in the sidebar, each persisted to the same JSON on save:
+1. Column mapping — a dropdown per canonical field, populated from the CSV header.
+2. Hover columns — multiselect from the CSV header.
+3. Category table — `st.data_editor` row-editable (add/remove/reorder).
+
+**Icons**
+
+FontAwesome names only (v1). Curated shortlist in the UI dropdown (`home`, `star`, `flag`, `circle`, `square`, `info`, `check`, `exclamation`, etc.) with free-form text override for any other valid FA name.
+
+**KML icon fidelity**: FA in the Folium map is rendered as CSS font, but KML needs bitmap icons. At export time we'll render the FA glyph + category color to a PNG on the fly and embed the PNGs in a **KMZ** (zipped KML). Implementation detail for the KML export module.
+
+**Legend**: deferred to v2.
 
 ## 5. Map providers
 
@@ -98,21 +138,23 @@ List2GIS/
 ├── input/
 │   └── Example-Adressen-Kategorien.csv
 ├── config/
-│   ├── categories.csv          # default symbology (user-editable via UI)
+│   ├── <dataset>.json          # one per input CSV: column mapping + symbology (user-editable via UI)
 │   └── basemaps.py             # tile URLs
 ├── assets/
-│   └── icons/                  # PNGs mapped from FontAwesome names (for KML)
+│   └── icons/                  # FA glyph → PNG renderer cache (for KMZ export)
 ├── cache/
 │   └── geocode.json            # persistent geocoding cache
 ├── src/
 │   ├── app.py                  # Streamlit entry point
 │   ├── data.py                 # CSV load, column mapping, coord parsing
+│   ├── config_io.py            # JSON config load/save, seed-from-header helper
 │   ├── geocode.py              # Nominatim + cache
-│   ├── symbology.py            # category→style lookup, config CSV I/O
+│   ├── symbology.py            # category→style lookup
 │   ├── mapview.py              # Folium map builder
-│   ├── export_kml.py
+│   ├── export_kml.py           # emits KMZ with per-category PNG icons
 │   └── export_pdf.py
-├── requirements.txt
+├── pyproject.toml
+├── uv.lock
 ├── ARCHITECTURE.md             # this file
 └── README.md
 ```
@@ -134,8 +176,9 @@ List2GIS/
 - BKG/Bayern geocoder option.
 - GeoJSON / GPX / EWKT export if needed.
 
-## 10. Decisions still open
+## 10. Resolved decisions
 
-1. **PDF renderer**: Matplotlib/contextily (recommended, cloud-friendly) vs. Playwright headless screenshot (pixel-identical to Folium but heavier deps). Current pick: Matplotlib.
-2. **Icon set for markers**: a curated FontAwesome shortlist (e.g. home, star, flag, circle, square, triangle, exclamation, check) vs. free-form input. Current pick: shortlist with free-form override.
-3. **Category IDs**: treat as strings (so `"1a"`, `"high"` also work) vs. integers only. Current pick: strings.
+- **PDF renderer**: Matplotlib + contextily (Streamlit-Cloud-friendly, no headless-browser deps).
+- **Icons**: FontAwesome names only (v1). Curated shortlist in the UI with free-form FA-name override. No custom PNG/SVG upload in v1.
+- **Category IDs**: strings (so `"1a"`, `"high"` also work).
+- **Default categories**: none. Categories come entirely from the per-dataset JSON config; a fresh config starts empty.
