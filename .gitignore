@@ -1,0 +1,31 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# uv
+# (uv.lock SHOULD be committed for applications; keep it tracked)
+
+# Project data — user's own CSV inputs, not shared
+/input/
+
+# Runtime caches (geocoding results, etc.)
+/cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Claude Code local settings (per-machine permissions)
+.claude/settings.local.json
