@@ -1,0 +1,44 @@
+{
+  "name": "Example-Adressen-Kategorien",
+  "source_file": "Example-Adressen-Kategorien.csv",
+  "csv_options": {
+    "delimiter": ";",
+    "encoding": "utf-8"
+  },
+  "columns": {
+    "id": "Schlüssel",
+    "label": "Adresse kurz",
+    "latlong": "latlong",
+    "lat": "lat",
+    "lon": "long",
+    "address": "Adresse komplett",
+    "category": "Kategorie"
+  },
+  "hover_columns": [
+    "Kategorie"
+  ],
+  "categories": [
+    {
+      "value": "1",
+      "label": "Cat 1",
+      "color": "#00FF00",
+      "icon": "star"
+    },
+    {
+      "value": "2",
+      "label": "Cat 2",
+      "color": "#FF0000",
+      "icon": "square"
+    },
+    {
+      "value": "3",
+      "label": "Cat 3",
+      "color": "#FF00FF",
+      "icon": "circle"
+    }
+  ],
+  "default_style": {
+    "color": "#888888",
+    "icon": "circle"
+  }
+}

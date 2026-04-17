@@ -26,7 +26,7 @@ from data import (
     detect_csv_options,
     read_csv,
 )
-from export_kml import export_kmz_bytes
+from export_kml import export_kml_bytes
 from mapview import build_map
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -148,23 +148,28 @@ def _sidebar_categories(cfg: Config) -> None:
     cats_df = pd.DataFrame(cfg["categories"])
     if cats_df.empty:
         cats_df = pd.DataFrame(columns=["value", "label", "color", "icon"])
-    edited = st.sidebar.data_editor(
-        cats_df,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="cats_editor",
-        column_config={
-            "value": st.column_config.TextColumn(
-                "value", help="Must match the category column value in the data"
-            ),
-            "label": st.column_config.TextColumn("label"),
-            "color": st.column_config.TextColumn("color", help="Hex like #d62728"),
-            "icon": st.column_config.TextColumn(
-                "icon", help="FontAwesome name (e.g. home, star, flag)"
-            ),
-        },
-    )
-    cfg["categories"] = edited.fillna("").to_dict("records")
+    # Wrap in a form so cell edits don't trigger a rerun mid-typing
+    # (which previously ate the first edit and required re-entering).
+    with st.sidebar.form("categories_form", clear_on_submit=False, border=False):
+        edited = st.data_editor(
+            cats_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="cats_editor",
+            column_config={
+                "value": st.column_config.TextColumn(
+                    "value", help="Must match the category column value in the data"
+                ),
+                "label": st.column_config.TextColumn("label"),
+                "color": st.column_config.TextColumn("color", help="Hex like #d62728"),
+                "icon": st.column_config.TextColumn(
+                    "icon", help="FontAwesome name (e.g. home, star, flag)"
+                ),
+            },
+        )
+        applied = st.form_submit_button("Apply categories")
+    if applied:
+        cfg["categories"] = edited.fillna("").to_dict("records")
 
 
 def _sidebar_default_style(cfg: Config) -> None:
@@ -205,13 +210,13 @@ def _sidebar_export_buttons(canon: pd.DataFrame, cfg: Config, source_name: str) 
     if n_ok == 0:
         st.sidebar.caption("No rows to export yet.")
         return
-    kmz_bytes = export_kmz_bytes(canon, cfg)
+    kml_bytes = export_kml_bytes(canon, cfg)
     st.sidebar.download_button(
-        label=f"⬇️ Download KMZ ({n_ok} points)",
-        data=kmz_bytes,
-        file_name=Path(source_name).stem + ".kmz",
-        mime="application/vnd.google-earth.kmz",
-        key="dl_kmz",
+        label=f"⬇️ Download KML ({n_ok} points)",
+        data=kml_bytes,
+        file_name=Path(source_name).stem + ".kml",
+        mime="application/vnd.google-earth.kml+xml",
+        key="dl_kml",
     )
 
 

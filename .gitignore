@@ -26,6 +26,10 @@ Thumbs.db
 
 # Streamlit
 .streamlit/secrets.toml
+streamlit.log
+
+# Generated icon cache (regenerated from source on demand)
+/assets/icons/
 
 # Claude Code local settings (per-machine permissions)
 .claude/settings.local.json

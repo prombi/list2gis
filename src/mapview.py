@@ -3,10 +3,19 @@ from __future__ import annotations
 
 import folium
 import pandas as pd
-from folium.plugins import BeautifyIcon
 
 from basemaps import BASEMAPS, DEFAULT_BASEMAP
 from config_io import Config
+
+# FontAwesome 6 (free) — served from cdnjs. Injected into each map so
+# DivIcon markers render `<i class="fa fa-...">` glyphs correctly.
+_FA_CSS_LINK = (
+    '<link rel="stylesheet" '
+    'href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" '
+    'crossorigin="anonymous" referrerpolicy="no-referrer">'
+)
+
+MARKER_SIZE = 28  # px; controls both font-size and icon_anchor
 
 
 def build_map(
@@ -26,8 +35,8 @@ def build_map(
     initial = selected_basemap if selected_basemap in BASEMAPS else DEFAULT_BASEMAP
 
     m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True)
+    m.get_root().header.add_child(folium.Element(_FA_CSS_LINK))
 
-    # Add the initially-visible basemap first so it renders on load.
     _add_tile_layer(m, initial, show=True)
     for name in BASEMAPS:
         if name != initial:
@@ -41,15 +50,7 @@ def build_map(
         color = style["color"] if style else default_style["color"]
         icon = style["icon"] if style else default_style["icon"]
 
-        marker_icon = BeautifyIcon(
-            icon=icon,
-            icon_shape="marker",
-            background_color=color,
-            border_color=color,
-            text_color="#ffffff",
-            inner_icon_style="font-size:14px; padding-top:2px;",
-            prefix="fa",
-        )
+        marker_icon = _fa_divicon(icon, color)
 
         tooltip = str(row.get("_label", "") or "") or None
         popup_html = str(row.get("_popup_html", "") or "")
@@ -62,8 +63,6 @@ def build_map(
             popup=popup,
         ).add_to(m)
 
-    # Fit to point bounds when there's more than one marker; keeps single-point
-    # maps at a reasonable zoom instead of zooming all the way in.
     if len(ok) > 1:
         sw = [ok["_lat"].min(), ok["_lon"].min()]
         ne = [ok["_lat"].max(), ok["_lon"].max()]
@@ -71,6 +70,32 @@ def build_map(
 
     folium.LayerControl(collapsed=False).add_to(m)
     return m
+
+
+def _fa_divicon(icon_name: str, color: str, size: int = MARKER_SIZE) -> folium.DivIcon:
+    """A DivIcon that renders a single FA glyph in `color`, centered on the point.
+
+    The white text-shadow gives the glyph readable contrast on any basemap
+    (aerial, topo, street). Pointer-events stay on the underlying Marker so
+    tooltips and popups still open on click.
+    """
+    html = (
+        f'<div style="'
+        f'font-size:{size}px;'
+        f'line-height:{size}px;'
+        f'color:{color};'
+        f'text-align:center;'
+        f'text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff,'
+        f' -1px 1px 0 #fff, 1px 1px 0 #fff;'
+        f'">'
+        f'<i class="fa fa-{icon_name}"></i>'
+        f'</div>'
+    )
+    return folium.DivIcon(
+        icon_size=(size, size),
+        icon_anchor=(size // 2, size // 2),
+        html=html,
+    )
 
 
 def _initial_view(ok: pd.DataFrame) -> tuple[list[float], int]:
