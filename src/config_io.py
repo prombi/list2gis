@@ -1,0 +1,203 @@
+"""JSON config I/O for List2GIS datasets.
+
+Each input CSV has a sibling config file at config/<stem>.json that
+captures column mapping, hover columns, and styled categories.
+See ARCHITECTURE.md §4 for the schema.
+"""
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import TypedDict
+
+
+class CsvOptions(TypedDict):
+    delimiter: str
+    encoding: str
+
+
+class ColumnMapping(TypedDict):
+    id: str | None
+    label: str | None
+    latlong: str | None
+    lat: str | None
+    lon: str | None
+    address: str | None
+    category: str | None
+
+
+class CategoryStyle(TypedDict):
+    value: str
+    label: str
+    color: str
+    icon: str
+
+
+class DefaultStyle(TypedDict):
+    color: str
+    icon: str
+
+
+class Config(TypedDict):
+    name: str
+    source_file: str
+    csv_options: CsvOptions
+    columns: ColumnMapping
+    hover_columns: list[str]
+    categories: list[CategoryStyle]
+    default_style: DefaultStyle
+
+
+CANONICAL_FIELDS: tuple[str, ...] = (
+    "id",
+    "label",
+    "latlong",
+    "lat",
+    "lon",
+    "address",
+    "category",
+)
+
+# Canonical-field → header-match patterns. Patterns beginning with "^"
+# are anchored regexes; others are case-insensitive substring matches.
+# Declaration order matters: `latlong` is tried before `lat`/`lon` so a
+# column literally named "latlong" doesn't get captured by the "lat" rule.
+_HEADER_PATTERNS: dict[str, tuple[str, ...]] = {
+    "id": ("schlüssel", "schluessel", "^id$", "key"),
+    "label": ("adresse kurz", "short address", "label", "name", "bezeichnung"),
+    "latlong": ("latlong", "lat_long", "lat,long", "coords", "coordinates"),
+    "lat": ("^lat$", "latitude", "breite"),
+    "lon": ("^lon$", "^long$", "longitude", "länge", "laenge"),
+    "address": ("adresse komplett", "full address", "^address$", "^adresse$"),
+    "category": ("kategorie", "^category$", "^cat$", "status", "^typ$", "^type$"),
+}
+
+DEFAULT_STYLE: DefaultStyle = {"color": "#888888", "icon": "circle"}
+
+
+def empty_config(name: str, source_file: str) -> Config:
+    return {
+        "name": name,
+        "source_file": source_file,
+        "csv_options": {"delimiter": ";", "encoding": "utf-8"},
+        "columns": {f: None for f in CANONICAL_FIELDS},  # type: ignore[typeddict-item]
+        "hover_columns": [],
+        "categories": [],
+        "default_style": dict(DEFAULT_STYLE),  # type: ignore[typeddict-item]
+    }
+
+
+def seed_config_from_header(
+    name: str,
+    source_file: str,
+    header: list[str],
+    csv_options: CsvOptions | None = None,
+) -> Config:
+    """Create a fresh Config with column mappings heuristically guessed from `header`."""
+    cfg = empty_config(name, source_file)
+    if csv_options:
+        cfg["csv_options"] = {**cfg["csv_options"], **csv_options}
+
+    used: set[str] = set()
+    for field, patterns in _HEADER_PATTERNS.items():
+        for pattern in patterns:
+            match = _find_header_match(header, pattern, exclude=used)
+            if match is not None:
+                cfg["columns"][field] = match  # type: ignore[literal-required]
+                used.add(match)
+                break
+    return cfg
+
+
+def _find_header_match(
+    header: list[str], pattern: str, exclude: set[str]
+) -> str | None:
+    regex = re.compile(pattern, re.IGNORECASE) if pattern.startswith("^") else None
+    for col in header:
+        if col in exclude:
+            continue
+        c = col.strip().casefold()
+        if regex is not None:
+            if regex.match(c):
+                return col
+        elif pattern.casefold() in c:
+            return col
+    return None
+
+
+def config_path_for(source_file: str, config_dir: Path) -> Path:
+    stem = Path(source_file).stem
+    return config_dir / f"{stem}.json"
+
+
+def load_config(path: Path) -> Config:
+    with path.open(encoding="utf-8") as f:
+        data = json.load(f)
+    # Start from an empty config so missing keys get sensible defaults, then
+    # overlay what was actually in the file.
+    cfg = empty_config(data.get("name", path.stem), data.get("source_file", ""))
+    cfg.update({k: v for k, v in data.items() if k in cfg})  # type: ignore[typeddict-item]
+    cfg["columns"] = {**cfg["columns"], **data.get("columns", {})}
+    cfg["csv_options"] = {**cfg["csv_options"], **data.get("csv_options", {})}
+    cfg["default_style"] = {**cfg["default_style"], **data.get("default_style", {})}
+    return cfg
+
+
+def save_config(config: Config, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
+def validate_config(config: Config, header: list[str] | None = None) -> list[str]:
+    """Return a list of human-readable error strings; empty list = valid."""
+    errors: list[str] = []
+    cols = config["columns"]
+
+    has_latlong = bool(cols.get("latlong"))
+    has_separate = bool(cols.get("lat")) and bool(cols.get("lon"))
+    has_address = bool(cols.get("address"))
+    if not (has_latlong or has_separate or has_address):
+        errors.append(
+            "At least one coordinate source is required: latlong, lat+lon, or address."
+        )
+
+    if not cols.get("category"):
+        errors.append("A category column is required.")
+
+    if header is not None:
+        header_set = set(header)
+        for field, val in cols.items():
+            if val is not None and val not in header_set:
+                errors.append(
+                    f"Column '{val}' (mapped to {field}) not found in CSV header."
+                )
+        for col in config["hover_columns"]:
+            if col not in header_set:
+                errors.append(f"Hover column '{col}' not found in CSV header.")
+
+    seen_values: set[str] = set()
+    for i, cat in enumerate(config["categories"]):
+        value = cat.get("value", "")
+        if not value:
+            errors.append(f"categories[{i}]: 'value' is required.")
+        elif value in seen_values:
+            errors.append(f"categories[{i}]: duplicate value '{value}'.")
+        seen_values.add(value)
+        if not _is_hex_color(cat.get("color", "")):
+            errors.append(
+                f"categories[{i}]: color '{cat.get('color')}' must be a 6-digit hex like #rrggbb."
+            )
+
+    if not _is_hex_color(config["default_style"].get("color", "")):
+        errors.append(
+            f"default_style.color '{config['default_style'].get('color')}' must be a 6-digit hex like #rrggbb."
+        )
+
+    return errors
+
+
+def _is_hex_color(s: str) -> bool:
+    return bool(re.fullmatch(r"#[0-9a-fA-F]{6}", s))
