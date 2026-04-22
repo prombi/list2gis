@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import uuid
 from pathlib import Path
 
@@ -332,7 +333,7 @@ def _sidebar_export_buttons(canon: pd.DataFrame, cfg: Config, source_name: str) 
     if n_ok == 0:
         st.sidebar.caption("No rows to export yet.")
         return
-    kml_bytes = export_kml_bytes(canon, cfg)
+    kml_bytes = _kml_bytes_for_download(canon, cfg, source_name)
     st.sidebar.download_button(
         label=f"⬇️ Download KML ({n_ok} points)",
         data=kml_bytes,
@@ -340,6 +341,37 @@ def _sidebar_export_buttons(canon: pd.DataFrame, cfg: Config, source_name: str) 
         mime="application/vnd.google-earth.kml+xml",
         key="dl_kml",
     )
+
+
+def _kml_bytes_for_download(
+    canon: pd.DataFrame, cfg: Config, source_name: str
+) -> bytes:
+    """Stable KML bytes across reruns.
+
+    Regenerating bytes on every rerun registers a new id in Streamlit's
+    MemoryMediaFileStorage; the old id can be evicted while the browser is
+    still fetching it, producing a MediaFileStorageError. Caching by a
+    fingerprint of (cfg, canon) keeps the id stable until inputs change.
+    """
+    cleaned_cats = [
+        {k: v for k, v in c.items() if not k.startswith("_")}
+        for c in cfg["categories"]
+    ]
+    cfg_snapshot = json.dumps(
+        {**cfg, "categories": cleaned_cats},
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+    canon_hash = int(pd.util.hash_pandas_object(canon, index=True).sum())
+    fingerprint = (cfg_snapshot, canon_hash)
+    cache_key = f"kml_cache::{source_name}"
+    cached = st.session_state.get(cache_key)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+    kml_bytes = export_kml_bytes(canon, cfg)
+    st.session_state[cache_key] = (fingerprint, kml_bytes)
+    return kml_bytes
 
 
 def _render_status_metrics(canon: pd.DataFrame) -> None:
