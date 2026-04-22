@@ -31,6 +31,14 @@ from data import (
     read_csv,
 )
 from export_kml import export_kml_bytes
+from geocode import (
+    apply_geocode_cache,
+    enriched_csv_bytes,
+    geocode_missing,
+    load_cache,
+    lookup,
+    save_cache,
+)
 from mapview import build_map
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -83,7 +91,10 @@ def main() -> None:
         return
 
     canon = build_canonical(df, cfg)
+    geocode_cache = load_cache()
+    apply_geocode_cache(canon, geocode_cache)
     _render_status_metrics(canon)
+    _sidebar_geocode_section(canon, cfg, df, source_name, geocode_cache)
     _sidebar_export_buttons(canon, cfg, source_name)
 
     if (canon["_status"] == STATUS_OK).sum() > 0:
@@ -325,6 +336,57 @@ def _sidebar_save_button(cfg: Config, config_path: Path) -> None:
     if st.sidebar.button("💾 Save config to disk"):
         save_config(cfg, config_path)
         st.sidebar.success(f"Saved `{config_path.relative_to(PROJECT_ROOT)}`.")
+
+
+def _sidebar_geocode_section(
+    canon: pd.DataFrame,
+    cfg: Config,
+    df_raw: pd.DataFrame,
+    source_name: str,
+    cache: dict,
+) -> None:
+    st.sidebar.header("Geocoding")
+    n_needs = int((canon["_status"] == STATUS_NEEDS_GEOCODE).sum())
+
+    if n_needs == 0:
+        st.sidebar.caption("No unresolved addresses.")
+    else:
+        if st.sidebar.button(f"📍 Geocode {n_needs} missing address(es)"):
+            addresses = (
+                canon.loc[canon["_status"] == STATUS_NEEDS_GEOCODE, "_address"]
+                .astype(str)
+                .tolist()
+            )
+            progress = st.sidebar.progress(0.0, text="Starting…")
+
+            def on_progress(done: int, total: int, addr: str) -> None:
+                snippet = addr if len(addr) <= 60 else addr[:57] + "…"
+                progress.progress(done / total, text=f"{done}/{total}: {snippet}")
+
+            hits = geocode_missing(addresses, cache, on_progress=on_progress)
+            save_cache(cache)
+            progress.empty()
+            st.sidebar.success(
+                f"Geocoded {hits} of {len(addresses)}. "
+                f"Cached results reused on next run."
+            )
+            st.rerun()
+
+    ad_col = cfg["columns"].get("address")
+    n_filled = 0
+    if ad_col and ad_col in df_raw.columns:
+        for addr in df_raw[ad_col].astype(str):
+            if addr.strip() and lookup(cache, addr) is not None:
+                n_filled += 1
+    if n_filled > 0:
+        enriched = enriched_csv_bytes(df_raw, cfg, cache)
+        st.sidebar.download_button(
+            label=f"⬇️ Download enriched CSV ({n_filled} filled)",
+            data=enriched,
+            file_name=Path(source_name).stem + "_geocoded.csv",
+            mime="text/csv",
+            key="dl_csv_enriched",
+        )
 
 
 def _sidebar_export_buttons(canon: pd.DataFrame, cfg: Config, source_name: str) -> None:
