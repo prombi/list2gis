@@ -1,11 +1,14 @@
 """Build a Folium map from a canonical DataFrame and a Config."""
 from __future__ import annotations
 
+import html as html_lib
+
 import folium
 import pandas as pd
 
 from basemaps import BASEMAPS, DEFAULT_BASEMAP
-from config_io import Config
+from config_io import DEFAULT_CATEGORY_SIZE_M, Config
+from shapes import shape_for_icon, shape_ring_latlon
 
 # FontAwesome 6 (free) — served from cdnjs. Injected into each map so
 # DivIcon markers render `<i class="fa fa-...">` glyphs correctly.
@@ -14,8 +17,6 @@ _FA_CSS_LINK = (
     'href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" '
     'crossorigin="anonymous" referrerpolicy="no-referrer">'
 )
-
-MARKER_SIZE = 28  # px; controls both font-size and icon_anchor
 
 
 def build_map(
@@ -44,24 +45,72 @@ def build_map(
 
     cat_by_value = {c["value"]: c for c in config["categories"]}
     default_style = config["default_style"]
+    rendering = config["rendering"]
+    scale_mode = rendering["icon_scale_mode"]
+    size_px = int(rendering["icon_size_px"])
+    show_labels = bool(rendering["show_labels"])
+    label_size_px = int(rendering["label_size_px"])
 
     for _, row in ok.iterrows():
-        style = cat_by_value.get(str(row["_category"]))
-        color = style["color"] if style else default_style["color"]
-        icon = style["icon"] if style else default_style["icon"]
+        cat = cat_by_value.get(str(row["_category"]))
+        color = cat["color"] if cat else default_style["color"]
+        icon = cat["icon"] if cat else default_style["icon"]
+        size_m = float(cat["size_m"]) if cat else float(
+            default_style.get("size_m", DEFAULT_CATEGORY_SIZE_M)
+        )
+        rotation_deg = float(cat["rotation_deg"]) if cat else float(
+            default_style.get("rotation_deg", 0.0)
+        )
 
-        marker_icon = _fa_divicon(icon, color)
-
-        tooltip = str(row.get("_label", "") or "") or None
+        lat, lon = float(row["_lat"]), float(row["_lon"])
+        label = str(row.get("_label", "") or "")
         popup_html = str(row.get("_popup_html", "") or "")
         popup = folium.Popup(popup_html, max_width=400) if popup_html else None
+        # Hover tooltip only when labels aren't already drawn as text.
+        hover_tooltip = (
+            folium.Tooltip(label, sticky=True) if label and not show_labels else None
+        )
 
-        folium.Marker(
-            location=[float(row["_lat"]), float(row["_lon"])],
-            icon=marker_icon,
-            tooltip=tooltip,
-            popup=popup,
-        ).add_to(m)
+        if scale_mode == "metric":
+            shape = shape_for_icon(icon)
+            # Circle is rotation-invariant → cheaper native folium.Circle.
+            if shape == "circle" and rotation_deg == 0:
+                folium.Circle(
+                    location=[lat, lon],
+                    radius=size_m,
+                    color=color,
+                    weight=2,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=0.6,
+                    tooltip=hover_tooltip,
+                    popup=popup,
+                ).add_to(m)
+            else:
+                folium.Polygon(
+                    locations=shape_ring_latlon(lat, lon, size_m, shape, rotation_deg),
+                    color=color,
+                    weight=2,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=0.6,
+                    tooltip=hover_tooltip,
+                    popup=popup,
+                ).add_to(m)
+        else:
+            folium.Marker(
+                location=[lat, lon],
+                icon=_fa_divicon(icon, color, size=size_px, rotation_deg=rotation_deg),
+                tooltip=hover_tooltip,
+                popup=popup,
+            ).add_to(m)
+
+        if show_labels and label:
+            folium.Marker(
+                location=[lat, lon],
+                icon=_label_divicon(label, label_size_px),
+                interactive=False,
+            ).add_to(m)
 
     if len(ok) > 1:
         sw = [ok["_lat"].min(), ok["_lon"].min()]
@@ -72,19 +121,50 @@ def build_map(
     return m
 
 
-def _fa_divicon(icon_name: str, color: str, size: int = MARKER_SIZE) -> folium.DivIcon:
+def _label_divicon(text: str, font_px: int) -> folium.DivIcon:
+    """Pure text label centered on the GPS point (horizontally and vertically).
+
+    Rendered as a zero-size DivIcon; `translate(-50%, -50%)` centers the
+    (auto-sized, nowrap) text box on the lat/lon anchor so the midpoint of
+    the text sits exactly on the coordinate.
+    """
+    safe = html_lib.escape(text)
+    inner = (
+        f'<div style="'
+        f'position:absolute;'
+        f'top:0;'
+        f'left:0;'
+        f'transform:translate(-50%, -50%);'
+        f'font-size:{font_px}px;'
+        f'color:#111;'
+        f'white-space:nowrap;'
+        f'text-shadow:-1px -1px 0 #fff,1px -1px 0 #fff,'
+        f'-1px 1px 0 #fff,1px 1px 0 #fff;'
+        f'pointer-events:none;'
+        f'">'
+        f"{safe}</div>"
+    )
+    outer = f'<div style="position:relative;width:0;height:0;">{inner}</div>'
+    return folium.DivIcon(icon_size=(0, 0), icon_anchor=(0, 0), html=outer)
+
+
+def _fa_divicon(
+    icon_name: str, color: str, size: int, rotation_deg: float = 0.0
+) -> folium.DivIcon:
     """A DivIcon that renders a single FA glyph in `color`, centered on the point.
 
     The white text-shadow gives the glyph readable contrast on any basemap
     (aerial, topo, street). Pointer-events stay on the underlying Marker so
     tooltips and popups still open on click.
     """
+    rotate_css = f"transform:rotate({rotation_deg}deg);" if rotation_deg else ""
     html = (
         f'<div style="'
         f'font-size:{size}px;'
         f'line-height:{size}px;'
         f'color:{color};'
         f'text-align:center;'
+        f'{rotate_css}'
         f'text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff,'
         f' -1px 1px 0 #fff, 1px 1px 0 #fff;'
         f'">'

@@ -67,10 +67,16 @@ One **JSON config per input CSV**, stored in `config/<name>.json` and committed 
   },
   "hover_columns": ["Adresse kurz", "PLZ", "Ort", "Kategorie"],
   "categories": [
-    {"value": "1", "label": "Status 1", "color": "#d62728", "icon": "home"},
-    {"value": "2", "label": "Status 2", "color": "#ff7f0e", "icon": "star"}
+    {"value": "1", "label": "Status 1", "color": "#d62728", "icon": "home", "size_m": 5.0, "rotation_deg": 0},
+    {"value": "2", "label": "Status 2", "color": "#ff7f0e", "icon": "star", "size_m": 8.0, "rotation_deg": 45}
   ],
-  "default_style": {"color": "#888888", "icon": "circle"}
+  "default_style": {"color": "#888888", "icon": "circle"},
+  "rendering": {
+    "icon_scale_mode": "screen",
+    "icon_size_px": 28,
+    "show_labels": false,
+    "label_size_px": 12
+  }
 }
 ```
 
@@ -80,8 +86,14 @@ One **JSON config per input CSV**, stored in `config/<name>.json` and committed 
 - **Coordinate source is flexible**: loader prefers `latlong` (combined `"lat,lon"` string) → `lat`+`lon` (separate numeric columns) → `address` (geocoded). Only one of the three needs to be present per row.
 - `hover_columns` is an ordered list — displayed in that order in the marker popup.
 - `categories[].value` is a string (so `"1"`, `"1a"`, `"high"` all work).
+- `categories[].size_m` is the metric-mode polygon radius (meters); consumed only when `rendering.icon_scale_mode == "metric"`.
+- `categories[].rotation_deg` tilts the marker clockwise (compass sense) — rotates the polygon vertices in metric mode, applies CSS `transform:rotate` in screen mode, and sets KML `IconStyle.heading` on export.
 - `default_style` renders rows whose category isn't in the list — prevents unknown categories from breaking the view.
 - `csv_options` only override autodetection when needed; usually omittable.
+- `rendering` controls global marker size/scaling behavior (per-category size comes from `categories[].size_m`):
+  - `icon_scale_mode: "screen"` keeps icons at `icon_size_px` regardless of zoom, rendering the FA glyph as CSS text in the map and as a bitmap icon in KML.
+  - `icon_scale_mode: "metric"` draws each marker as a filled polygon of bounding-radius `categories[].size_m` (true-to-world, scales with zoom). Common symbols (circle, square, triangle, diamond, plus, cross, star, pentagon, hexagon) map to shape-specific polygons; irregular FA glyphs (e.g. `home`, `flag`) fall back to a circle. On export these are emitted as KML Polygons rather than iconized Points.
+  - `show_labels` toggles an always-visible text label at each point, sized by `label_size_px`. The label is rendered as a centered DivIcon (plain text with a white halo) in the map view and via KML `LabelStyle.scale` on export. When off, hovering a marker still shows a transient tooltip.
 
 **UI editing**
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import uuid
 from pathlib import Path
 
 import pandas as pd
@@ -11,6 +12,7 @@ from streamlit_folium import st_folium
 from basemaps import BASEMAPS, DEFAULT_BASEMAP
 from config_io import (
     CANONICAL_FIELDS,
+    DEFAULT_CATEGORY_SIZE_M,
     Config,
     config_path_for,
     load_config,
@@ -18,6 +20,7 @@ from config_io import (
     seed_config_from_header,
     validate_config,
 )
+from shapes import ICON_NAMES
 from data import (
     STATUS_ERROR,
     STATUS_NEEDS_GEOCODE,
@@ -69,6 +72,7 @@ def main() -> None:
     _sidebar_hover_columns(cfg, header)
     _sidebar_categories(cfg)
     _sidebar_default_style(cfg)
+    _sidebar_rendering(cfg)
     basemap = _sidebar_basemap_picker()
     _sidebar_save_button(cfg, config_path)
 
@@ -143,46 +147,164 @@ def _sidebar_hover_columns(cfg: Config, header: list[str]) -> None:
     )
 
 
+def _ensure_category_uids(cfg: Config) -> None:
+    """Attach a stable ephemeral `_uid` to each category so widget keys survive
+    reorder/delete. Stripped before save by save_config."""
+    for cat in cfg["categories"]:
+        if "_uid" not in cat:
+            cat["_uid"] = uuid.uuid4().hex[:8]  # type: ignore[typeddict-item]
+
+
 def _sidebar_categories(cfg: Config) -> None:
     st.sidebar.header("Categories")
-    cats_df = pd.DataFrame(cfg["categories"])
-    if cats_df.empty:
-        cats_df = pd.DataFrame(columns=["value", "label", "color", "icon"])
-    # Wrap in a form so cell edits don't trigger a rerun mid-typing
-    # (which previously ate the first edit and required re-entering).
-    with st.sidebar.form("categories_form", clear_on_submit=False, border=False):
-        edited = st.data_editor(
-            cats_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            key="cats_editor",
-            column_config={
-                "value": st.column_config.TextColumn(
-                    "value", help="Must match the category column value in the data"
-                ),
-                "label": st.column_config.TextColumn("label"),
-                "color": st.column_config.TextColumn("color", help="Hex like #d62728"),
-                "icon": st.column_config.TextColumn(
-                    "icon", help="FontAwesome name (e.g. home, star, flag)"
-                ),
-            },
-        )
-        applied = st.form_submit_button("Apply categories")
-    if applied:
-        cfg["categories"] = edited.fillna("").to_dict("records")
+    _ensure_category_uids(cfg)
+
+    to_remove: list[int] = []
+    for i, cat in enumerate(cfg["categories"]):
+        uid = cat["_uid"]  # type: ignore[typeddict-item]
+        title = cat.get("label") or cat.get("value") or f"Category {i + 1}"
+        with st.sidebar.expander(f"🎨 {title}", expanded=False):
+            cat["value"] = st.text_input(
+                "Value",
+                value=cat.get("value", ""),
+                key=f"cat_value_{uid}",
+                help="Must match the category column value in the CSV",
+            )
+            cat["label"] = st.text_input(
+                "Label",
+                value=cat.get("label", ""),
+                key=f"cat_label_{uid}",
+            )
+            c1, c2 = st.columns([1, 2])
+            cat["color"] = c1.color_picker(
+                "Color",
+                value=cat.get("color") or "#888888",
+                key=f"cat_color_{uid}",
+            )
+            icon_options = list(ICON_NAMES)
+            current_icon = cat.get("icon") or "circle"
+            icon_index = (
+                icon_options.index(current_icon)
+                if current_icon in icon_options
+                else 0
+            )
+            cat["icon"] = c2.selectbox(
+                "Icon / shape",
+                options=icon_options,
+                index=icon_index,
+                key=f"cat_icon_{uid}",
+            )
+            cat["size_m"] = st.number_input(
+                "Metric radius (m)",
+                min_value=0.5, max_value=500.0,
+                value=float(cat.get("size_m", DEFAULT_CATEGORY_SIZE_M)),
+                step=0.5,
+                key=f"cat_size_{uid}",
+                help="Used in metric scale mode. Ignored in screen mode.",
+            )
+            cat["rotation_deg"] = float(st.slider(
+                "Tilt (° clockwise)",
+                min_value=-180, max_value=180,
+                value=int(cat.get("rotation_deg", 0)),
+                key=f"cat_rot_{uid}",
+            ))
+            if st.button("🗑️ Remove category", key=f"cat_del_{uid}"):
+                to_remove.append(i)
+
+    for idx in sorted(to_remove, reverse=True):
+        cfg["categories"].pop(idx)
+
+    if st.sidebar.button("➕ Add category"):
+        cfg["categories"].append({  # type: ignore[typeddict-item]
+            "_uid": uuid.uuid4().hex[:8],
+            "value": "",
+            "label": "",
+            "color": "#1f77b4",
+            "icon": "circle",
+            "size_m": DEFAULT_CATEGORY_SIZE_M,
+            "rotation_deg": 0.0,
+        })
+        st.rerun()
+
+    if to_remove:
+        st.rerun()
 
 
 def _sidebar_default_style(cfg: Config) -> None:
     with st.sidebar.expander("Default style (for unlisted categories)"):
-        cfg["default_style"]["color"] = st.text_input(
-            "Default color",
-            value=cfg["default_style"].get("color", "#888888"),
+        d = cfg["default_style"]
+        c1, c2 = st.columns([1, 2])
+        d["color"] = c1.color_picker(
+            "Color",
+            value=d.get("color", "#888888"),
             key="default_color",
         )
-        cfg["default_style"]["icon"] = st.text_input(
-            "Default icon",
-            value=cfg["default_style"].get("icon", "circle"),
+        icon_options = list(ICON_NAMES)
+        current = d.get("icon", "circle")
+        idx = icon_options.index(current) if current in icon_options else 0
+        d["icon"] = c2.selectbox(
+            "Icon / shape",
+            options=icon_options,
+            index=idx,
             key="default_icon",
+        )
+        d["size_m"] = st.number_input(
+            "Metric radius (m)",
+            min_value=0.5, max_value=500.0,
+            value=float(d.get("size_m", DEFAULT_CATEGORY_SIZE_M)),
+            step=0.5,
+            key="default_size_m",
+        )
+        d["rotation_deg"] = float(st.slider(
+            "Tilt (° clockwise)",
+            min_value=-180, max_value=180,
+            value=int(d.get("rotation_deg", 0)),
+            key="default_rotation",
+        ))
+
+
+def _sidebar_rendering(cfg: Config) -> None:
+    st.sidebar.header("Rendering")
+    r = cfg["rendering"]
+
+    mode = st.sidebar.radio(
+        "Icon scale",
+        options=["screen", "metric"],
+        index=0 if r["icon_scale_mode"] == "screen" else 1,
+        format_func=lambda m: (
+            "Screen-constant (same px at any zoom)"
+            if m == "screen"
+            else "Metric (true-to-scale)"
+        ),
+        key="icon_scale_mode",
+        help=(
+            "Metric mode draws filled polygons sized per-category (set in "
+            "the Categories section)."
+        ),
+    )
+    r["icon_scale_mode"] = mode  # type: ignore[typeddict-item]
+
+    if mode == "screen":
+        r["icon_size_px"] = st.sidebar.slider(
+            "Icon size (px)",
+            min_value=10, max_value=80, value=int(r["icon_size_px"]), step=2,
+            key="icon_size_px",
+        )
+    else:
+        st.sidebar.caption(
+            "Metric radius is set per category (Categories → Metric radius)."
+        )
+
+    r["show_labels"] = st.sidebar.checkbox(
+        "Show labels on map",
+        value=bool(r["show_labels"]),
+        key="show_labels",
+    )
+    if r["show_labels"]:
+        r["label_size_px"] = st.sidebar.slider(
+            "Label size (px)",
+            min_value=8, max_value=24, value=int(r["label_size_px"]), step=1,
+            key="label_size_px",
         )
 
 
@@ -239,7 +361,7 @@ def _render_problem_rows(canon: pd.DataFrame) -> None:
             problems[
                 ["_id", "_label", "_category", "_status", "_status_reason", "_address"]
             ],
-            use_container_width=True,
+            width="stretch",
         )
 
 
