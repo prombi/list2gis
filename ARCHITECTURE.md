@@ -50,7 +50,7 @@ Configs are **named presets**, stored under `config/<preset>.json` and committed
 
 ```json
 {
-  "name": "Adressen Pöcking",
+  "name": "Example preset",
   "csv_options": {
     "delimiter": ";",
     "encoding": "utf-8"
