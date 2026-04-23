@@ -72,6 +72,7 @@ def main() -> None:
     header0 = list(df0.columns)
 
     preset = _sidebar_preset_picker(source_name, header0)
+    _sidebar_preset_import(source_name)
     scope = f"{preset}__{source_name}"
 
     cfg_key = f"cfg::{preset}::{source_name}"
@@ -155,7 +156,14 @@ def _sidebar_preset_picker(source_name: str, header: list[str]) -> str:
     options = [NEW_PRESET_LABEL] + presets
 
     sel_key = f"preset_sel__{source_name}"
-    if sel_key not in st.session_state:
+    force_key = f"preset_force__{source_name}"
+    # A prior save action may have requested a specific preset. Apply it
+    # here, before the selectbox is instantiated — Streamlit forbids writes
+    # to a widget's session_state key after the widget has rendered.
+    forced = st.session_state.pop(force_key, None)
+    if forced is not None and forced in options:
+        st.session_state[sel_key] = forced
+    elif sel_key not in st.session_state:
         st.session_state[sel_key] = _auto_pick_preset(source_name, header, presets)
     if st.session_state[sel_key] not in options:
         st.session_state[sel_key] = NEW_PRESET_LABEL
@@ -170,6 +178,48 @@ def _sidebar_preset_picker(source_name: str, header: list[str]) -> str:
         ),
     )
     return chosen
+
+
+def _sidebar_preset_import(source_name: str) -> None:
+    """Let the user import a preset JSON from disk (needed on streamlit.io,
+    where users can't drop files into the repo's config/ folder)."""
+    with st.sidebar.expander("📂 Import preset JSON"):
+        uploaded = st.file_uploader(
+            "Upload a .json preset",
+            type=["json"],
+            key=f"preset_import__{source_name}",
+        )
+        if uploaded is None:
+            return
+        try:
+            data = json.loads(uploaded.getvalue().decode("utf-8"))
+        except Exception as exc:
+            st.error(f"Not valid JSON: {exc}")
+            return
+        if not isinstance(data, dict):
+            st.error("Preset JSON must be an object at the top level.")
+            return
+
+        derived = _clean_preset_name(str(data.get("name") or Path(uploaded.name).stem))
+        name_input = st.text_input(
+            "Import as",
+            value=derived,
+            key=f"preset_import_name__{source_name}",
+            help="You can rename the preset before importing.",
+        )
+        if st.button("Import", key=f"preset_import_btn__{source_name}"):
+            cleaned = _clean_preset_name(name_input)
+            if not cleaned:
+                st.error("Enter a preset name (letters, digits, `-` or `_`).")
+                return
+            target = preset_path(cleaned, CONFIG_DIR)
+            if target.exists():
+                st.error(f"Preset `{cleaned}` already exists. Pick a different name.")
+                return
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(uploaded.getvalue())
+            st.session_state[f"preset_force__{source_name}"] = cleaned
+            st.rerun()
 
 
 def _sidebar_file_info(source_name: str, preset: str, csv_opts: dict) -> None:
@@ -427,7 +477,10 @@ def _sidebar_save_section(cfg: Config, preset: str, source_name: str) -> None:
             # Carry current in-memory edits to the new preset's session key
             # so the user keeps their state after the rerun.
             st.session_state[f"cfg::{cleaned}::{source_name}"] = cfg
-            st.session_state[f"preset_sel__{source_name}"] = cleaned
+            # Picker selectbox is already instantiated this run, so we can't
+            # set its session_state key directly. Park the new value under a
+            # force key; the picker consumes it on the next run.
+            st.session_state[f"preset_force__{source_name}"] = cleaned
             st.sidebar.success(f"Saved `config/{cleaned}.json`.")
             st.rerun()
 
