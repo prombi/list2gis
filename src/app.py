@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import uuid
 from pathlib import Path
 
@@ -15,8 +16,10 @@ from config_io import (
     CANONICAL_FIELDS,
     DEFAULT_CATEGORY_SIZE_M,
     Config,
-    config_path_for,
+    header_matches,
+    list_presets,
     load_config,
+    preset_path,
     save_config,
     seed_config_from_header,
     validate_config,
@@ -44,6 +47,7 @@ from mapview import build_map
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 NONE_LABEL = "— none —"
+NEW_PRESET_LABEL = "(new from header)"
 
 
 def main() -> None:
@@ -58,14 +62,22 @@ def main() -> None:
 
     source_bytes = uploaded.getvalue()
     source_name = uploaded.name
-
     csv_opts = detect_csv_options(io.BytesIO(source_bytes))
-    config_path = config_path_for(source_name, CONFIG_DIR)
 
-    cfg_key = f"cfg::{source_name}"
+    try:
+        df0 = read_csv(io.BytesIO(source_bytes), **csv_opts)
+    except Exception as exc:
+        st.error(f"Failed to read CSV: {exc}")
+        return
+    header0 = list(df0.columns)
+
+    preset = _sidebar_preset_picker(source_name, header0)
+    scope = f"{preset}__{source_name}"
+
+    cfg_key = f"cfg::{preset}::{source_name}"
     if cfg_key not in st.session_state:
         st.session_state[cfg_key] = _bootstrap_config(
-            source_name, source_bytes, csv_opts, config_path
+            preset, source_name, header0, csv_opts
         )
     cfg: Config = st.session_state[cfg_key]
 
@@ -76,14 +88,14 @@ def main() -> None:
         return
     header = list(df.columns)
 
-    _sidebar_file_info(source_name, config_path, csv_opts)
-    _sidebar_column_mapping(cfg, header)
-    _sidebar_hover_columns(cfg, header)
-    _sidebar_categories(cfg)
-    _sidebar_default_style(cfg)
-    _sidebar_rendering(cfg)
-    basemap = _sidebar_basemap_picker()
-    _sidebar_save_button(cfg, config_path)
+    _sidebar_file_info(source_name, preset, csv_opts)
+    _sidebar_column_mapping(cfg, header, scope)
+    _sidebar_hover_columns(cfg, header, scope)
+    _sidebar_categories(cfg, scope)
+    _sidebar_default_style(cfg, scope)
+    _sidebar_rendering(cfg, scope)
+    basemap = _sidebar_basemap_picker(scope)
+    _sidebar_save_section(cfg, preset, source_name)
 
     errors = validate_config(cfg, header)
     if errors:
@@ -94,46 +106,83 @@ def main() -> None:
     geocode_cache = load_cache()
     apply_geocode_cache(canon, geocode_cache)
     _render_status_metrics(canon)
-    _sidebar_geocode_section(canon, cfg, df, source_name, geocode_cache)
     _sidebar_export_buttons(canon, cfg, source_name)
 
     if (canon["_status"] == STATUS_OK).sum() > 0:
         m = build_map(canon, cfg, selected_basemap=basemap)
-        st_folium(m, width=None, height=650, returned_objects=[], key="map")
+        st_folium(m, width=None, height=650, returned_objects=[], key=f"map__{scope}")
     else:
         st.warning("No rows with valid coordinates yet.")
 
-    _render_problem_rows(canon)
+    _render_attention_section(canon, cfg, df, source_name, geocode_cache, scope)
 
 
 def _bootstrap_config(
+    preset: str,
     source_name: str,
-    source_bytes: bytes,
+    header: list[str],
     csv_opts: dict,
-    config_path: Path,
 ) -> Config:
-    if config_path.exists():
-        return load_config(config_path)
-    # Read header only, using the detected options, to seed column guesses.
-    df0 = read_csv(io.BytesIO(source_bytes), **csv_opts)
+    if preset != NEW_PRESET_LABEL:
+        path = preset_path(preset, CONFIG_DIR)
+        if path.exists():
+            return load_config(path)
     return seed_config_from_header(
         Path(source_name).stem,
-        source_name,
-        list(df0.columns),
+        header,
         csv_options=csv_opts,
     )
 
 
-def _sidebar_file_info(source_name: str, config_path: Path, csv_opts: dict) -> None:
+def _auto_pick_preset(source_name: str, header: list[str], presets: list[str]) -> str:
+    """Filename-stem match first, then first preset whose columns all exist in header."""
+    stem = Path(source_name).stem
+    if stem in presets:
+        return stem
+    for name in presets:
+        try:
+            cfg = load_config(preset_path(name, CONFIG_DIR))
+        except Exception:
+            continue
+        if header_matches(cfg, header):
+            return name
+    return NEW_PRESET_LABEL
+
+
+def _sidebar_preset_picker(source_name: str, header: list[str]) -> str:
+    st.sidebar.header("Config preset")
+    presets = list_presets(CONFIG_DIR)
+    options = [NEW_PRESET_LABEL] + presets
+
+    sel_key = f"preset_sel__{source_name}"
+    if sel_key not in st.session_state:
+        st.session_state[sel_key] = _auto_pick_preset(source_name, header, presets)
+    if st.session_state[sel_key] not in options:
+        st.session_state[sel_key] = NEW_PRESET_LABEL
+
+    chosen = st.sidebar.selectbox(
+        "Active preset",
+        options=options,
+        key=sel_key,
+        help=(
+            "Presets are named column-mapping + style configurations stored "
+            "under config/. They're independent of the CSV filename."
+        ),
+    )
+    return chosen
+
+
+def _sidebar_file_info(source_name: str, preset: str, csv_opts: dict) -> None:
     st.sidebar.header("File")
     st.sidebar.write(f"**Source**: `{source_name}`")
-    st.sidebar.write(f"**Config**: `{config_path.relative_to(PROJECT_ROOT)}`")
+    label = preset if preset != NEW_PRESET_LABEL else "(unsaved — new from header)"
+    st.sidebar.write(f"**Preset**: `{label}`")
     st.sidebar.caption(
         f"Detected delimiter `{csv_opts['delimiter']}`, encoding `{csv_opts['encoding']}`."
     )
 
 
-def _sidebar_column_mapping(cfg: Config, header: list[str]) -> None:
+def _sidebar_column_mapping(cfg: Config, header: list[str], scope: str) -> None:
     st.sidebar.header("Column mapping")
     options = [NONE_LABEL] + header
     for field in CANONICAL_FIELDS:
@@ -143,19 +192,19 @@ def _sidebar_column_mapping(cfg: Config, header: list[str]) -> None:
             field,
             options=options,
             index=default_idx,
-            key=f"col_{field}",
+            key=f"col_{field}__{scope}",
         )
         cfg["columns"][field] = None if chosen == NONE_LABEL else chosen  # type: ignore[literal-required]
 
 
-def _sidebar_hover_columns(cfg: Config, header: list[str]) -> None:
+def _sidebar_hover_columns(cfg: Config, header: list[str], scope: str) -> None:
     st.sidebar.header("Hover columns")
     current = [c for c in cfg["hover_columns"] if c in header]
     cfg["hover_columns"] = st.sidebar.multiselect(
         "Columns shown in marker popup",
         options=header,
         default=current,
-        key="hover_cols",
+        key=f"hover_cols__{scope}",
     )
 
 
@@ -167,7 +216,7 @@ def _ensure_category_uids(cfg: Config) -> None:
             cat["_uid"] = uuid.uuid4().hex[:8]  # type: ignore[typeddict-item]
 
 
-def _sidebar_categories(cfg: Config) -> None:
+def _sidebar_categories(cfg: Config, scope: str) -> None:
     st.sidebar.header("Categories")
     _ensure_category_uids(cfg)
 
@@ -226,7 +275,7 @@ def _sidebar_categories(cfg: Config) -> None:
     for idx in sorted(to_remove, reverse=True):
         cfg["categories"].pop(idx)
 
-    if st.sidebar.button("➕ Add category"):
+    if st.sidebar.button("➕ Add category", key=f"cat_add__{scope}"):
         cfg["categories"].append({  # type: ignore[typeddict-item]
             "_uid": uuid.uuid4().hex[:8],
             "value": "",
@@ -242,14 +291,14 @@ def _sidebar_categories(cfg: Config) -> None:
         st.rerun()
 
 
-def _sidebar_default_style(cfg: Config) -> None:
+def _sidebar_default_style(cfg: Config, scope: str) -> None:
     with st.sidebar.expander("Default style (for unlisted categories)"):
         d = cfg["default_style"]
         c1, c2 = st.columns([1, 2])
         d["color"] = c1.color_picker(
             "Color",
             value=d.get("color", "#888888"),
-            key="default_color",
+            key=f"default_color__{scope}",
         )
         icon_options = list(ICON_NAMES)
         current = d.get("icon", "circle")
@@ -258,24 +307,24 @@ def _sidebar_default_style(cfg: Config) -> None:
             "Icon / shape",
             options=icon_options,
             index=idx,
-            key="default_icon",
+            key=f"default_icon__{scope}",
         )
         d["size_m"] = st.number_input(
             "Metric radius (m)",
             min_value=0.5, max_value=500.0,
             value=float(d.get("size_m", DEFAULT_CATEGORY_SIZE_M)),
             step=0.5,
-            key="default_size_m",
+            key=f"default_size_m__{scope}",
         )
         d["rotation_deg"] = float(st.slider(
             "Tilt (° clockwise)",
             min_value=-180, max_value=180,
             value=int(d.get("rotation_deg", 0)),
-            key="default_rotation",
+            key=f"default_rotation__{scope}",
         ))
 
 
-def _sidebar_rendering(cfg: Config) -> None:
+def _sidebar_rendering(cfg: Config, scope: str) -> None:
     st.sidebar.header("Rendering")
     r = cfg["rendering"]
 
@@ -288,7 +337,7 @@ def _sidebar_rendering(cfg: Config) -> None:
             if m == "screen"
             else "Metric (true-to-scale)"
         ),
-        key="icon_scale_mode",
+        key=f"icon_scale_mode__{scope}",
         help=(
             "Metric mode draws filled polygons sized per-category (set in "
             "the Categories section)."
@@ -300,7 +349,7 @@ def _sidebar_rendering(cfg: Config) -> None:
         r["icon_size_px"] = st.sidebar.slider(
             "Icon size (px)",
             min_value=10, max_value=80, value=int(r["icon_size_px"]), step=2,
-            key="icon_size_px",
+            key=f"icon_size_px__{scope}",
         )
     else:
         st.sidebar.caption(
@@ -310,54 +359,118 @@ def _sidebar_rendering(cfg: Config) -> None:
     r["show_labels"] = st.sidebar.checkbox(
         "Show labels on map",
         value=bool(r["show_labels"]),
-        key="show_labels",
+        key=f"show_labels__{scope}",
     )
     if r["show_labels"]:
-        r["label_size_px"] = st.sidebar.slider(
-            "Label size (px)",
-            min_value=8, max_value=24, value=int(r["label_size_px"]), step=1,
-            key="label_size_px",
+        label_mode = st.sidebar.radio(
+            "Label scale",
+            options=["screen", "metric"],
+            index=0 if r.get("label_scale_mode", "screen") == "screen" else 1,
+            format_func=lambda m: (
+                "Screen-constant (same px at any zoom)"
+                if m == "screen"
+                else "Metric (true-to-scale, scales with zoom)"
+            ),
+            key=f"label_scale_mode__{scope}",
         )
+        r["label_scale_mode"] = label_mode  # type: ignore[typeddict-item]
+        if label_mode == "screen":
+            r["label_size_px"] = st.sidebar.slider(
+                "Label size (px)",
+                min_value=8, max_value=24, value=int(r["label_size_px"]), step=1,
+                key=f"label_size_px__{scope}",
+            )
+        else:
+            r["label_size_m"] = st.sidebar.number_input(
+                "Label height (m)",
+                min_value=0.5, max_value=500.0,
+                value=float(r.get("label_size_m", 5.0)),
+                step=0.5,
+                key=f"label_size_m__{scope}",
+            )
 
 
-def _sidebar_basemap_picker() -> str:
+def _sidebar_basemap_picker(scope: str) -> str:
     st.sidebar.header("View")
     names = list(BASEMAPS.keys())
     return st.sidebar.selectbox(
         "Initial basemap",
         options=names,
         index=names.index(DEFAULT_BASEMAP),
-        key="basemap",
+        key=f"basemap__{scope}",
     )
 
 
-def _sidebar_save_button(cfg: Config, config_path: Path) -> None:
+def _sidebar_save_section(cfg: Config, preset: str, source_name: str) -> None:
     st.sidebar.header("Actions")
-    if st.sidebar.button("💾 Save config to disk"):
-        save_config(cfg, config_path)
-        st.sidebar.success(f"Saved `{config_path.relative_to(PROJECT_ROOT)}`.")
+
+    if preset != NEW_PRESET_LABEL:
+        if st.sidebar.button(f"💾 Save to '{preset}'", key=f"save_existing__{source_name}"):
+            cfg["name"] = preset
+            save_config(cfg, preset_path(preset, CONFIG_DIR))
+            st.sidebar.success(f"Saved `config/{preset}.json`.")
+
+    new_name_raw = st.sidebar.text_input(
+        "Save as new preset",
+        key=f"new_preset_name__{source_name}",
+        placeholder="preset name",
+    )
+    if st.sidebar.button("💾 Save as new", key=f"save_new__{source_name}"):
+        cleaned = _clean_preset_name(new_name_raw)
+        if not cleaned:
+            st.sidebar.error("Enter a preset name (letters, digits, `-` or `_`).")
+        elif preset_path(cleaned, CONFIG_DIR).exists():
+            st.sidebar.error(f"Preset `{cleaned}` already exists.")
+        else:
+            cfg["name"] = cleaned
+            save_config(cfg, preset_path(cleaned, CONFIG_DIR))
+            # Carry current in-memory edits to the new preset's session key
+            # so the user keeps their state after the rerun.
+            st.session_state[f"cfg::{cleaned}::{source_name}"] = cfg
+            st.session_state[f"preset_sel__{source_name}"] = cleaned
+            st.sidebar.success(f"Saved `config/{cleaned}.json`.")
+            st.rerun()
 
 
-def _sidebar_geocode_section(
+def _clean_preset_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_\- ]", "", name or "").strip()
+    return cleaned.replace(" ", "_")
+
+
+def _render_attention_section(
     canon: pd.DataFrame,
     cfg: Config,
     df_raw: pd.DataFrame,
     source_name: str,
     cache: dict,
+    scope: str,
 ) -> None:
-    st.sidebar.header("Geocoding")
     n_needs = int((canon["_status"] == STATUS_NEEDS_GEOCODE).sum())
+    problems = canon[canon["_status"] != STATUS_OK]
 
-    if n_needs == 0:
-        st.sidebar.caption("No unresolved addresses.")
-    else:
-        if st.sidebar.button(f"📍 Geocode {n_needs} missing address(es)"):
+    ad_col = cfg["columns"].get("address")
+    n_filled = 0
+    if ad_col and ad_col in df_raw.columns:
+        for addr in df_raw[ad_col].astype(str):
+            if addr.strip() and lookup(cache, addr) is not None:
+                n_filled += 1
+
+    if n_needs == 0 and n_filled == 0 and len(problems) == 0:
+        return
+
+    st.subheader("Rows needing attention")
+
+    if n_needs > 0:
+        if st.button(
+            f"📍 Geocode {n_needs} missing address(es)",
+            key=f"geocode_main__{scope}",
+        ):
             addresses = (
                 canon.loc[canon["_status"] == STATUS_NEEDS_GEOCODE, "_address"]
                 .astype(str)
                 .tolist()
             )
-            progress = st.sidebar.progress(0.0, text="Starting…")
+            progress = st.progress(0.0, text="Starting…")
 
             def on_progress(done: int, total: int, addr: str) -> None:
                 snippet = addr if len(addr) <= 60 else addr[:57] + "…"
@@ -366,27 +479,30 @@ def _sidebar_geocode_section(
             hits = geocode_missing(addresses, cache, on_progress=on_progress)
             save_cache(cache)
             progress.empty()
-            st.sidebar.success(
+            st.success(
                 f"Geocoded {hits} of {len(addresses)}. "
                 f"Cached results reused on next run."
             )
             st.rerun()
 
-    ad_col = cfg["columns"].get("address")
-    n_filled = 0
-    if ad_col and ad_col in df_raw.columns:
-        for addr in df_raw[ad_col].astype(str):
-            if addr.strip() and lookup(cache, addr) is not None:
-                n_filled += 1
     if n_filled > 0:
         enriched = enriched_csv_bytes(df_raw, cfg, cache)
-        st.sidebar.download_button(
+        st.download_button(
             label=f"⬇️ Download enriched CSV ({n_filled} filled)",
             data=enriched,
             file_name=Path(source_name).stem + "_geocoded.csv",
             mime="text/csv",
-            key="dl_csv_enriched",
+            key=f"dl_csv_enriched__{scope}",
         )
+
+    if len(problems) > 0:
+        with st.expander(f"Problem rows ({len(problems)})", expanded=False):
+            st.dataframe(
+                problems[
+                    ["_id", "_label", "_category", "_status", "_status_reason", "_address"]
+                ],
+                width="stretch",
+            )
 
 
 def _sidebar_export_buttons(canon: pd.DataFrame, cfg: Config, source_name: str) -> None:
@@ -401,7 +517,7 @@ def _sidebar_export_buttons(canon: pd.DataFrame, cfg: Config, source_name: str) 
         data=kml_bytes,
         file_name=Path(source_name).stem + ".kml",
         mime="application/vnd.google-earth.kml+xml",
-        key="dl_kml",
+        key=f"dl_kml__{source_name}",
     )
 
 
@@ -441,22 +557,19 @@ def _render_status_metrics(canon: pd.DataFrame) -> None:
     n_geo = int((canon["_status"] == STATUS_NEEDS_GEOCODE).sum())
     n_err = int((canon["_status"] == STATUS_ERROR).sum())
     c1, c2, c3 = st.columns(3)
-    c1.metric("Mapped", n_ok)
-    c2.metric("Needs geocoding", n_geo)
-    c3.metric("Errors", n_err)
+    _colored_metric(c1, "Mapped", n_ok, critical=False)
+    _colored_metric(c2, "Needs geocoding", n_geo, critical=n_geo > 0)
+    _colored_metric(c3, "Errors", n_err, critical=n_err > 0)
 
 
-def _render_problem_rows(canon: pd.DataFrame) -> None:
-    problems = canon[canon["_status"] != STATUS_OK]
-    if len(problems) == 0:
-        return
-    with st.expander(f"Rows needing attention ({len(problems)})"):
-        st.dataframe(
-            problems[
-                ["_id", "_label", "_category", "_status", "_status_reason", "_address"]
-            ],
-            width="stretch",
-        )
+def _colored_metric(col, label: str, value: int, critical: bool) -> None:
+    color = "#d62728" if critical else "inherit"
+    col.markdown(
+        f'<div style="font-size:0.85rem;color:rgb(128,128,128);margin-bottom:0.15rem">'
+        f"{label}</div>"
+        f'<div style="font-size:2.25rem;color:{color};line-height:1.1">{value}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 if __name__ == "__main__":

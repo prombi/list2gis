@@ -46,12 +46,11 @@ Canonical in-memory representation (pandas DataFrame):
 
 ## 4. Dataset config (column mapping + symbology)
 
-One **JSON config per input CSV**, stored in `config/<name>.json` and committed to git (it's mapping logic, not data). The app offers to load an existing config on upload, or to create a fresh one seeded with best-guess column matches.
+Configs are **named presets**, stored under `config/<preset>.json` and committed to git (it's mapping logic, not data). A preset is independent of any particular CSV filename — it applies to any CSV whose header contains the columns it references. On upload the app picks a preset by (1) filename-stem match, then (2) the first preset whose mapped columns all exist in the uploaded header, else (3) `(new from header)` — a fresh config seeded from the CSV header that the user can save under any name. The sidebar exposes an "Active preset" dropdown plus a "Save as new preset" field.
 
 ```json
 {
   "name": "Adressen Pöcking",
-  "source_file": "Example-Adressen-Kategorien.csv",
   "csv_options": {
     "delimiter": ";",
     "encoding": "utf-8"
@@ -97,10 +96,12 @@ One **JSON config per input CSV**, stored in `config/<name>.json` and committed 
 
 **UI editing**
 
-Three sections in the sidebar, each persisted to the same JSON on save:
+Sidebar sections, all scoped to the active preset and persisted on save:
+0. Config preset — dropdown of all saved presets plus `(new from header)`. Auto-picks on upload.
 1. Column mapping — a dropdown per canonical field, populated from the CSV header.
 2. Hover columns — multiselect from the CSV header.
-3. Category table — `st.data_editor` row-editable (add/remove/reorder).
+3. Categories — expandable per-category editors (add/remove).
+4. Actions — "Save to '<preset>'" (overwrites) and "Save as new preset" (with a name input).
 
 **Icons**
 

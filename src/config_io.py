@@ -1,15 +1,15 @@
 """JSON config I/O for List2GIS datasets.
 
-Each input CSV has a sibling config file at config/<stem>.json that
-captures column mapping, hover columns, and styled categories.
-See ARCHITECTURE.md §4 for the schema.
+Configs are named presets stored under `config/<preset>.json`, independent
+of the CSV filename — a preset can be applied to any CSV whose header
+contains the columns it references. See ARCHITECTURE.md §4 for the schema.
 """
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Iterable, Literal, TypedDict
 
 
 class CsvOptions(TypedDict):
@@ -22,6 +22,8 @@ class Rendering(TypedDict):
     icon_size_px: int
     show_labels: bool
     label_size_px: int
+    label_scale_mode: Literal["screen", "metric"]
+    label_size_m: float
 
 
 class ColumnMapping(TypedDict):
@@ -52,7 +54,6 @@ class DefaultStyle(TypedDict):
 
 class Config(TypedDict):
     name: str
-    source_file: str
     csv_options: CsvOptions
     columns: ColumnMapping
     hover_columns: list[str]
@@ -97,16 +98,17 @@ DEFAULT_RENDERING: Rendering = {
     "icon_size_px": 28,
     "show_labels": False,
     "label_size_px": 12,
+    "label_scale_mode": "screen",
+    "label_size_m": 5.0,
 }
 
 # Default metric radius for newly added categories (meters). Per-category now.
 DEFAULT_CATEGORY_SIZE_M: float = 5.0
 
 
-def empty_config(name: str, source_file: str) -> Config:
+def empty_config(name: str) -> Config:
     return {
         "name": name,
-        "source_file": source_file,
         "csv_options": {"delimiter": ";", "encoding": "utf-8"},
         "columns": {f: None for f in CANONICAL_FIELDS},  # type: ignore[typeddict-item]
         "hover_columns": [],
@@ -118,12 +120,11 @@ def empty_config(name: str, source_file: str) -> Config:
 
 def seed_config_from_header(
     name: str,
-    source_file: str,
     header: list[str],
     csv_options: CsvOptions | None = None,
 ) -> Config:
     """Create a fresh Config with column mappings heuristically guessed from `header`."""
-    cfg = empty_config(name, source_file)
+    cfg = empty_config(name)
     if csv_options:
         cfg["csv_options"] = {**cfg["csv_options"], **csv_options}
 
@@ -154,9 +155,31 @@ def _find_header_match(
     return None
 
 
-def config_path_for(source_file: str, config_dir: Path) -> Path:
-    stem = Path(source_file).stem
-    return config_dir / f"{stem}.json"
+def list_presets(config_dir: Path) -> list[str]:
+    """Return sorted preset names (filenames without .json) under `config_dir`."""
+    if not config_dir.exists():
+        return []
+    return sorted(p.stem for p in config_dir.glob("*.json"))
+
+
+def preset_path(name: str, config_dir: Path) -> Path:
+    return config_dir / f"{name}.json"
+
+
+def header_matches(cfg: Config, header: Iterable[str]) -> bool:
+    """True if every column the config references exists in `header`.
+
+    Used to auto-select a preset for an uploaded CSV when the filename
+    doesn't match any preset name directly.
+    """
+    header_set = set(header)
+    for field, val in cfg["columns"].items():
+        if val is not None and val not in header_set:
+            return False
+    for col in cfg.get("hover_columns", []):
+        if col not in header_set:
+            return False
+    return True
 
 
 def load_config(path: Path) -> Config:
@@ -164,7 +187,7 @@ def load_config(path: Path) -> Config:
         data = json.load(f)
     # Start from an empty config so missing keys get sensible defaults, then
     # overlay what was actually in the file.
-    cfg = empty_config(data.get("name", path.stem), data.get("source_file", ""))
+    cfg = empty_config(data.get("name", path.stem))
     cfg.update({k: v for k, v in data.items() if k in cfg})  # type: ignore[typeddict-item]
     cfg["columns"] = {**cfg["columns"], **data.get("columns", {})}
     cfg["csv_options"] = {**cfg["csv_options"], **data.get("csv_options", {})}

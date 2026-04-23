@@ -1,6 +1,5 @@
 {
   "name": "Example-Adressen-Kategorien",
-  "source_file": "Example-Adressen-Kategorien.csv",
   "csv_options": {
     "delimiter": ";",
     "encoding": "utf-8"

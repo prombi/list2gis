@@ -18,6 +18,50 @@ _FA_CSS_LINK = (
     'crossorigin="anonymous" referrerpolicy="no-referrer">'
 )
 
+# Updates the font-size of every `.l2g-metric-label` on zoom/move so labels
+# scale with the map (i.e. stay ~N meters tall in map units). Uses the
+# Web Mercator ground resolution formula: mpp = 156543.03 * cos(lat) / 2^z.
+# Finds the Leaflet map by duck-typing on window so it survives Folium's
+# auto-generated map variable name changing between reruns.
+_METRIC_LABEL_JS = """
+<script>
+(function () {
+  function findMap() {
+    for (var k in window) {
+      try {
+        var v = window[k];
+        if (v && typeof v === 'object'
+            && v._container
+            && typeof v.getZoom === 'function'
+            && typeof v.getCenter === 'function') {
+          return v;
+        }
+      } catch (e) { }
+    }
+    return null;
+  }
+  function update(map) {
+    var zoom = map.getZoom();
+    var center = map.getCenter();
+    var mpp = 156543.03 * Math.cos(center.lat * Math.PI / 180) / Math.pow(2, zoom);
+    var els = document.querySelectorAll('.l2g-metric-label');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var sizeM = parseFloat(el.getAttribute('data-size-m') || '5');
+      el.style.fontSize = (sizeM / mpp) + 'px';
+    }
+  }
+  function init() {
+    var map = findMap();
+    if (!map) { setTimeout(init, 200); return; }
+    map.on('zoomend moveend load', function () { update(map); });
+    update(map);
+  }
+  init();
+})();
+</script>
+"""
+
 
 def build_map(
     df: pd.DataFrame,
@@ -50,6 +94,11 @@ def build_map(
     size_px = int(rendering["icon_size_px"])
     show_labels = bool(rendering["show_labels"])
     label_size_px = int(rendering["label_size_px"])
+    label_scale_mode = rendering.get("label_scale_mode", "screen")
+    label_size_m = float(rendering.get("label_size_m", 5.0))
+
+    if show_labels and label_scale_mode == "metric":
+        m.get_root().html.add_child(folium.Element(_METRIC_LABEL_JS))
 
     for _, row in ok.iterrows():
         cat = cat_by_value.get(str(row["_category"]))
@@ -106,9 +155,14 @@ def build_map(
             ).add_to(m)
 
         if show_labels and label:
+            label_icon = (
+                _metric_label_divicon(label, label_size_m)
+                if label_scale_mode == "metric"
+                else _label_divicon(label, label_size_px)
+            )
             folium.Marker(
                 location=[lat, lon],
-                icon=_label_divicon(label, label_size_px),
+                icon=label_icon,
                 interactive=False,
             ).add_to(m)
 
@@ -119,6 +173,32 @@ def build_map(
 
     folium.LayerControl(collapsed=False).add_to(m)
     return m
+
+
+def _metric_label_divicon(text: str, size_m: float) -> folium.DivIcon:
+    """Zoom-responsive label: font-size is set (and updated) by _METRIC_LABEL_JS.
+
+    Emits `.l2g-metric-label` with `data-size-m`; the injected script
+    recomputes pixel size on zoomend/moveend so the label stays ~size_m
+    meters tall in map units.
+    """
+    safe = html_lib.escape(text)
+    inner = (
+        f'<div class="l2g-metric-label" data-size-m="{size_m}" style="'
+        f'position:absolute;'
+        f'top:0;'
+        f'left:0;'
+        f'transform:translate(-50%, -50%);'
+        f'color:#111;'
+        f'white-space:nowrap;'
+        f'text-shadow:-1px -1px 0 #fff,1px -1px 0 #fff,'
+        f'-1px 1px 0 #fff,1px 1px 0 #fff;'
+        f'pointer-events:none;'
+        f'">'
+        f"{safe}</div>"
+    )
+    outer = f'<div style="position:relative;width:0;height:0;">{inner}</div>'
+    return folium.DivIcon(icon_size=(0, 0), icon_anchor=(0, 0), html=outer)
 
 
 def _label_divicon(text: str, font_px: int) -> folium.DivIcon:
