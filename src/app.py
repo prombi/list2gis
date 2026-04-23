@@ -70,6 +70,8 @@ def main() -> None:
         return
     header0 = list(df0.columns)
 
+    # Sidebar — preset selection / import (top of sidebar so it gates everything).
+    _sidebar_file_info(source_name, csv_opts)
     preset = _sidebar_preset_picker(source_name, header0)
     _sidebar_preset_import(source_name)
     scope = f"{preset}__{source_name}"
@@ -88,13 +90,12 @@ def main() -> None:
         return
     header = list(df.columns)
 
-    _sidebar_file_info(source_name, preset, csv_opts)
+    # Sidebar — preset editing.
     _sidebar_column_mapping(cfg, header, scope)
-    _sidebar_hover_columns(cfg, header, scope)
     _sidebar_categories(cfg, scope)
     _sidebar_default_style(cfg, scope)
-    _sidebar_rendering(cfg, scope)
-    basemap = _sidebar_basemap_picker(scope)
+    basemap = _sidebar_rendering(cfg, header, scope)
+    # Download button last so it captures all edits above in the same render.
     _sidebar_save_section(cfg, preset, source_name, scope)
 
     errors = validate_config(cfg, header)
@@ -105,8 +106,11 @@ def main() -> None:
     canon = build_canonical(df, cfg)
     geocode_cache = load_cache()
     apply_geocode_cache(canon, geocode_cache)
+
+    # Main area — data actions and outputs in journey order:
+    # metrics → attention (geocode + enriched CSV + problem rows) → map → export.
     _render_status_metrics(canon)
-    _sidebar_export_buttons(canon, cfg, source_name)
+    _render_attention_section(canon, cfg, df, source_name, geocode_cache, scope)
 
     if (canon["_status"] == STATUS_OK).sum() > 0:
         m = build_map(canon, cfg, selected_basemap=basemap)
@@ -114,7 +118,7 @@ def main() -> None:
     else:
         st.warning("No rows with valid coordinates yet.")
 
-    _render_attention_section(canon, cfg, df, source_name, geocode_cache, scope)
+    _render_export_section(canon, cfg, source_name)
 
 
 def _bootstrap_config(
@@ -221,11 +225,9 @@ def _sidebar_preset_import(source_name: str) -> None:
             st.rerun()
 
 
-def _sidebar_file_info(source_name: str, preset: str, csv_opts: dict) -> None:
+def _sidebar_file_info(source_name: str, csv_opts: dict) -> None:
     st.sidebar.header("File")
     st.sidebar.write(f"**Source**: `{source_name}`")
-    label = preset if preset != NEW_PRESET_LABEL else "(unsaved — new from header)"
-    st.sidebar.write(f"**Preset**: `{label}`")
     st.sidebar.caption(
         f"Detected delimiter `{csv_opts['delimiter']}`, encoding `{csv_opts['encoding']}`."
     )
@@ -244,17 +246,6 @@ def _sidebar_column_mapping(cfg: Config, header: list[str], scope: str) -> None:
             key=f"col_{field}__{scope}",
         )
         cfg["columns"][field] = None if chosen == NONE_LABEL else chosen  # type: ignore[literal-required]
-
-
-def _sidebar_hover_columns(cfg: Config, header: list[str], scope: str) -> None:
-    st.sidebar.header("Hover columns")
-    current = [c for c in cfg["hover_columns"] if c in header]
-    cfg["hover_columns"] = st.sidebar.multiselect(
-        "Columns shown in marker popup",
-        options=header,
-        default=current,
-        key=f"hover_cols__{scope}",
-    )
 
 
 def _ensure_category_uids(cfg: Config) -> None:
@@ -373,10 +364,17 @@ def _sidebar_default_style(cfg: Config, scope: str) -> None:
         ))
 
 
-def _sidebar_rendering(cfg: Config, scope: str) -> None:
+def _sidebar_rendering(cfg: Config, header: list[str], scope: str) -> str:
+    """Visual settings (basemap, hover-popup columns, icon/label scaling).
+
+    Returns the chosen initial basemap name. Basemap lives here rather than
+    in its own section because it's a view preference like icon/label size —
+    not a column-mapping concern.
+    """
     st.sidebar.header("Rendering")
     r = cfg["rendering"]
 
+    # 1. Icon scale
     mode = st.sidebar.radio(
         "Icon scale",
         options=["screen", "metric"],
@@ -387,10 +385,6 @@ def _sidebar_rendering(cfg: Config, scope: str) -> None:
             else "Metric (true-to-scale)"
         ),
         key=f"icon_scale_mode__{scope}",
-        help=(
-            "Metric mode draws filled polygons sized per-category (set in "
-            "the Categories section)."
-        ),
     )
     r["icon_scale_mode"] = mode  # type: ignore[typeddict-item]
 
@@ -400,11 +394,8 @@ def _sidebar_rendering(cfg: Config, scope: str) -> None:
             min_value=10, max_value=80, value=int(r["icon_size_px"]), step=2,
             key=f"icon_size_px__{scope}",
         )
-    else:
-        st.sidebar.caption(
-            "Metric radius is set per category (Categories → Metric radius)."
-        )
 
+    # 2. Labels
     r["show_labels"] = st.sidebar.checkbox(
         "Show labels on map",
         value=bool(r["show_labels"]),
@@ -438,16 +429,26 @@ def _sidebar_rendering(cfg: Config, scope: str) -> None:
                 key=f"label_size_m__{scope}",
             )
 
+    # 3. Hover columns
+    current_hover = [c for c in cfg["hover_columns"] if c in header]
+    cfg["hover_columns"] = st.sidebar.multiselect(
+        "Hover columns (popup)",
+        options=header,
+        default=current_hover,
+        key=f"hover_cols__{scope}",
+        help="Columns displayed in the popup when a marker is clicked.",
+    )
 
-def _sidebar_basemap_picker(scope: str) -> str:
-    st.sidebar.header("View")
+    # 4. Initial basemap
     names = list(BASEMAPS.keys())
-    return st.sidebar.selectbox(
+    basemap = st.sidebar.selectbox(
         "Initial basemap",
         options=names,
         index=names.index(DEFAULT_BASEMAP),
         key=f"basemap__{scope}",
     )
+
+    return basemap
 
 
 def _sidebar_save_section(cfg: Config, preset: str, source_name: str, scope: str) -> None:
@@ -565,14 +566,13 @@ def _render_attention_section(
             )
 
 
-def _sidebar_export_buttons(canon: pd.DataFrame, cfg: Config, source_name: str) -> None:
-    st.sidebar.header("Export")
+def _render_export_section(canon: pd.DataFrame, cfg: Config, source_name: str) -> None:
     n_ok = int((canon["_status"] == STATUS_OK).sum())
     if n_ok == 0:
-        st.sidebar.caption("No rows to export yet.")
         return
+    st.subheader("Export")
     kml_bytes = _kml_bytes_for_download(canon, cfg, source_name)
-    st.sidebar.download_button(
+    st.download_button(
         label=f"⬇️ Download KML ({n_ok} points)",
         data=kml_bytes,
         file_name=Path(source_name).stem + ".kml",

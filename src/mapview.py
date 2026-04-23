@@ -5,6 +5,8 @@ import html as html_lib
 
 import folium
 import pandas as pd
+from branca.element import MacroElement
+from jinja2 import Template
 
 from basemaps import BASEMAPS, DEFAULT_BASEMAP
 from config_io import DEFAULT_CATEGORY_SIZE_M, Config
@@ -18,49 +20,46 @@ _FA_CSS_LINK = (
     'crossorigin="anonymous" referrerpolicy="no-referrer">'
 )
 
-# Updates the font-size of every `.l2g-metric-label` on zoom/move so labels
-# scale with the map (i.e. stay ~N meters tall in map units). Uses the
-# Web Mercator ground resolution formula: mpp = 156543.03 * cos(lat) / 2^z.
-# Finds the Leaflet map by duck-typing on window so it survives Folium's
-# auto-generated map variable name changing between reruns.
-_METRIC_LABEL_JS = """
-<script>
-(function () {
-  function findMap() {
-    for (var k in window) {
-      try {
-        var v = window[k];
-        if (v && typeof v === 'object'
-            && v._container
-            && typeof v.getZoom === 'function'
-            && typeof v.getCenter === 'function') {
-          return v;
-        }
-      } catch (e) { }
-    }
-    return null;
-  }
-  function update(map) {
-    var zoom = map.getZoom();
-    var center = map.getCenter();
-    var mpp = 156543.03 * Math.cos(center.lat * Math.PI / 180) / Math.pow(2, zoom);
-    var els = document.querySelectorAll('.l2g-metric-label');
-    for (var i = 0; i < els.length; i++) {
-      var el = els[i];
-      var sizeM = parseFloat(el.getAttribute('data-size-m') || '5');
-      el.style.fontSize = (sizeM / mpp) + 'px';
-    }
-  }
-  function init() {
-    var map = findMap();
-    if (!map) { setTimeout(init, 200); return; }
-    map.on('zoomend moveend load', function () { update(map); });
-    update(map);
-  }
-  init();
-})();
-</script>
-"""
+
+class _MetricLabelScaler(MacroElement):
+    """Scales `.l2g-metric-label` font-size on zoom/move so labels stay
+    ~`data-size-m` meters tall in map units (Web Mercator ground
+    resolution: mpp = 156543.03 * cos(lat) / 2^zoom).
+
+    Implemented as a folium MacroElement so the script renders inside
+    folium's main `<script>` block — `{{ this._parent.get_name() }}`
+    expands to the map's auto-generated variable, which has already been
+    initialized by the time our code runs. This is more reliable than
+    duck-typing on `window` from a body-level script.
+    """
+
+    _template = Template("""
+        {% macro script(this, kwargs) %}
+            (function () {
+                var leaflet_map = {{ this._parent.get_name() }};
+                function updateMetricLabels() {
+                    var zoom = leaflet_map.getZoom();
+                    var center = leaflet_map.getCenter();
+                    var mpp = 156543.03 * Math.cos(center.lat * Math.PI / 180) / Math.pow(2, zoom);
+                    var els = document.querySelectorAll('.l2g-metric-label');
+                    for (var i = 0; i < els.length; i++) {
+                        var el = els[i];
+                        var sizeM = parseFloat(el.getAttribute('data-size-m') || '5');
+                        el.style.fontSize = (sizeM / mpp) + 'px';
+                    }
+                }
+                leaflet_map.on('zoomend moveend load', updateMetricLabels);
+                updateMetricLabels();
+                // Markers may be added a tick after this script runs; one
+                // delayed pass catches labels that weren't yet in the DOM.
+                setTimeout(updateMetricLabels, 50);
+            })();
+        {% endmacro %}
+    """)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._name = "MetricLabelScaler"
 
 
 def build_map(
@@ -98,7 +97,7 @@ def build_map(
     label_size_m = float(rendering.get("label_size_m", 5.0))
 
     if show_labels and label_scale_mode == "metric":
-        m.get_root().html.add_child(folium.Element(_METRIC_LABEL_JS))
+        m.add_child(_MetricLabelScaler())
 
     for _, row in ok.iterrows():
         cat = cat_by_value.get(str(row["_category"]))
