@@ -20,7 +20,6 @@ from config_io import (
     list_presets,
     load_config,
     preset_path,
-    save_config,
     seed_config_from_header,
     validate_config,
 )
@@ -96,7 +95,7 @@ def main() -> None:
     _sidebar_default_style(cfg, scope)
     _sidebar_rendering(cfg, scope)
     basemap = _sidebar_basemap_picker(scope)
-    _sidebar_save_section(cfg, preset, source_name)
+    _sidebar_save_section(cfg, preset, source_name, scope)
 
     errors = validate_config(cfg, header)
     if errors:
@@ -451,38 +450,46 @@ def _sidebar_basemap_picker(scope: str) -> str:
     )
 
 
-def _sidebar_save_section(cfg: Config, preset: str, source_name: str) -> None:
+def _sidebar_save_section(cfg: Config, preset: str, source_name: str, scope: str) -> None:
+    """Download the current preset as JSON. The browser's save dialog lets
+    the user pick the folder — there's no filesystem path picker in
+    Streamlit, and writing to the server-side `config/` folder is
+    ephemeral on streamlit.io, so download is the only portable flow."""
     st.sidebar.header("Actions")
 
-    if preset != NEW_PRESET_LABEL:
-        if st.sidebar.button(f"💾 Save to '{preset}'", key=f"save_existing__{source_name}"):
-            cfg["name"] = preset
-            save_config(cfg, preset_path(preset, CONFIG_DIR))
-            st.sidebar.success(f"Saved `config/{preset}.json`.")
-
-    new_name_raw = st.sidebar.text_input(
-        "Save as new preset",
-        key=f"new_preset_name__{source_name}",
-        placeholder="preset name",
+    default_name = preset if preset != NEW_PRESET_LABEL else (
+        _clean_preset_name(str(cfg.get("name") or Path(source_name).stem)) or "preset"
     )
-    if st.sidebar.button("💾 Save as new", key=f"save_new__{source_name}"):
-        cleaned = _clean_preset_name(new_name_raw)
-        if not cleaned:
-            st.sidebar.error("Enter a preset name (letters, digits, `-` or `_`).")
-        elif preset_path(cleaned, CONFIG_DIR).exists():
-            st.sidebar.error(f"Preset `{cleaned}` already exists.")
-        else:
-            cfg["name"] = cleaned
-            save_config(cfg, preset_path(cleaned, CONFIG_DIR))
-            # Carry current in-memory edits to the new preset's session key
-            # so the user keeps their state after the rerun.
-            st.session_state[f"cfg::{cleaned}::{source_name}"] = cfg
-            # Picker selectbox is already instantiated this run, so we can't
-            # set its session_state key directly. Park the new value under a
-            # force key; the picker consumes it on the next run.
-            st.session_state[f"preset_force__{source_name}"] = cleaned
-            st.sidebar.success(f"Saved `config/{cleaned}.json`.")
-            st.rerun()
+    name_input = st.sidebar.text_input(
+        "Preset name",
+        value=default_name,
+        key=f"save_name__{scope}",
+        help="Used as the download filename (<name>.json).",
+    )
+    cleaned = _clean_preset_name(name_input) or "preset"
+    preset_json = _serialize_preset_for_download(cfg, cleaned)
+    st.sidebar.download_button(
+        label="⬇️ Download preset JSON",
+        data=preset_json,
+        file_name=f"{cleaned}.json",
+        mime="application/json",
+        key=f"dl_preset__{scope}",
+        help=(
+            "Save the current preset to your computer — the browser will "
+            "prompt for a folder. Reload it later via 'Import preset JSON'."
+        ),
+    )
+
+
+def _serialize_preset_for_download(cfg: Config, name: str) -> bytes:
+    """Mirror save_config's cleanup (strip ephemeral `_uid`) so the
+    downloaded JSON round-trips cleanly through Import."""
+    cleaned_cats = [
+        {k: v for k, v in cat.items() if not k.startswith("_")}
+        for cat in cfg["categories"]
+    ]
+    payload = {**cfg, "name": name, "categories": cleaned_cats}
+    return json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
 
 
 def _clean_preset_name(name: str) -> str:
