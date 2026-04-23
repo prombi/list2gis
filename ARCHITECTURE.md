@@ -188,6 +188,7 @@ List2GIS/
 - Legend on map + in PDF.
 - BKG/Bayern geocoder option.
 - GeoJSON / GPX / EWKT export if needed.
+- **In-app marker editing**: click a marker to nudge its lat/lon (via `streamlit-folium` click events) and write the new coords back to the CSV. Closes the loop without round-tripping through Google Earth Pro / QGIS, since BayernAtlas treats imported KML as a read-only overlay.
 
 ## 10. Resolved decisions
 
