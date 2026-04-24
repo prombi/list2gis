@@ -453,33 +453,44 @@ def _sidebar_rendering(cfg: Config, header: list[str], scope: str) -> str:
 
 def _sidebar_save_section(cfg: Config, preset: str, source_name: str, scope: str) -> None:
     """Download the current preset as JSON. The browser's save dialog lets
-    the user pick the folder — there's no filesystem path picker in
-    Streamlit, and writing to the server-side `config/` folder is
+    the user pick the folder and rename the file — there's no filesystem
+    path picker in Streamlit, and the server-side `config/` folder is
     ephemeral on streamlit.io, so download is the only portable flow."""
     st.sidebar.header("Actions")
 
-    default_name = preset if preset != NEW_PRESET_LABEL else (
+    name = preset if preset != NEW_PRESET_LABEL else (
         _clean_preset_name(str(cfg.get("name") or Path(source_name).stem)) or "preset"
     )
-    name_input = st.sidebar.text_input(
-        "Preset name",
-        value=default_name,
-        key=f"save_name__{scope}",
-        help="Used as the download filename (<name>.json).",
-    )
-    cleaned = _clean_preset_name(name_input) or "preset"
-    preset_json = _serialize_preset_for_download(cfg, cleaned)
+    preset_json = _preset_json_for_download(cfg, name, scope)
     st.sidebar.download_button(
         label="⬇️ Download preset JSON",
         data=preset_json,
-        file_name=f"{cleaned}.json",
+        file_name=f"{name}.json",
         mime="application/json",
         key=f"dl_preset__{scope}",
         help=(
-            "Save the current preset to your computer — the browser will "
-            "prompt for a folder. Reload it later via 'Import preset JSON'."
+            "Save the current preset to your computer. The browser's save "
+            "dialog will let you pick the folder and rename the file."
         ),
     )
+
+
+def _preset_json_for_download(cfg: Config, name: str, scope: str) -> bytes:
+    """Stable bytes across reruns to avoid Streamlit's MediaFileStorageError.
+
+    Same problem the KML download solves: each call to download_button(data=...)
+    registers an entry in MemoryMediaFileStorage; if a stale render leaves an
+    old id around that the browser then tries to fetch, the id may already be
+    evicted. Returning the cached bytes object when content is unchanged keeps
+    the registered id stable until the preset actually changes.
+    """
+    new_bytes = _serialize_preset_for_download(cfg, name)
+    cache_key = f"preset_json_cache::{scope}"
+    cached = st.session_state.get(cache_key)
+    if cached is not None and cached == new_bytes:
+        return cached
+    st.session_state[cache_key] = new_bytes
+    return new_bytes
 
 
 def _serialize_preset_for_download(cfg: Config, name: str) -> bytes:
