@@ -50,9 +50,9 @@ NEW_PRESET_LABEL = "(new from header)"
 
 
 def main() -> None:
-    st.set_page_config(page_title="List2GIS", layout="wide")
-    st.title("List2GIS")
-    st.caption("Visualize a CSV of geo points on a map. See ARCHITECTURE.md for details.")
+    st.set_page_config(page_title="List2Map", layout="wide")
+    st.title("List2Map")
+    st.caption("Visualize a CSV of geo points on a map.")
 
     uploaded = st.file_uploader("Upload CSV", type=["csv"])
     if uploaded is None:

@@ -1,4 +1,4 @@
-# List2GIS — Architecture
+# List2Map — Architecture
 
 Minimal web app to visualize a list of geo points (addresses + categories) on a map, with switchable basemaps, KML export, and PDF export of the current view.
 
