@@ -244,9 +244,6 @@ def validate_config(config: Config, header: list[str] | None = None) -> list[str
             "At least one coordinate source is required: latlong, lat+lon, or address."
         )
 
-    if not cols.get("category"):
-        errors.append("A category column is required.")
-
     if header is not None:
         header_set = set(header)
         for field, val in cols.items():
