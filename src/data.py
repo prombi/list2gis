@@ -75,6 +75,15 @@ def build_canonical(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     out["_status"] = status
     out["_status_reason"] = reason
 
+    out["_geocode_confidence"] = ""
+    out.loc[out["_status"] == STATUS_OK, "_geocode_confidence"] = "high"
+    conf_col = cols.get("geocode_confidence")
+    if conf_col and conf_col in df.columns:
+        has_conf = df[conf_col].astype(str).str.strip() != ""
+        out.loc[has_conf, "_geocode_confidence"] = (
+            df.loc[has_conf, conf_col].astype(str).str.strip()
+        )
+
     out["_popup_html"] = _build_popups(df, config["hover_columns"])
     return out
 

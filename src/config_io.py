@@ -34,6 +34,7 @@ class ColumnMapping(TypedDict):
     lon: str | None
     address: str | None
     category: str | None
+    geocode_confidence: str | None
 
 
 class CategoryStyle(TypedDict):
@@ -70,6 +71,7 @@ CANONICAL_FIELDS: tuple[str, ...] = (
     "lon",
     "address",
     "category",
+    "geocode_confidence",
 )
 
 # Canonical-field → header-match patterns. Patterns beginning with "^"
@@ -84,6 +86,7 @@ _HEADER_PATTERNS: dict[str, tuple[str, ...]] = {
     "lon": ("^lon$", "^long$", "longitude", "länge", "laenge"),
     "address": ("adresse komplett", "full address", "^address$", "^adresse$"),
     "category": ("kategorie", "^category$", "^cat$", "status", "^typ$", "^type$"),
+    "geocode_confidence": ("geocode_confidence", "geo_confidence", "^confidence$"),
 }
 
 DEFAULT_STYLE: DefaultStyle = {

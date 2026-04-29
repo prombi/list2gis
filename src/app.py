@@ -527,10 +527,21 @@ def _render_attention_section(
             if addr.strip() and lookup(cache, addr) is not None:
                 n_filled += 1
 
-    if n_needs == 0 and n_filled == 0 and len(problems) == 0:
+    n_approx = int((
+        (canon["_status"] == STATUS_OK)
+        & canon["_geocode_confidence"].isin(["medium", "low"])
+    ).sum())
+
+    if n_needs == 0 and n_filled == 0 and len(problems) == 0 and n_approx == 0:
         return
 
     st.subheader("Rows needing attention")
+
+    if n_approx > 0:
+        st.warning(
+            f"{n_approx} point(s) have approximate coordinates "
+            f"(street or town level only — shown with red dashed border on the map)."
+        )
 
     if n_needs > 0:
         if st.button(

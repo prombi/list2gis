@@ -119,6 +119,12 @@ def build_map(
             folium.Tooltip(label, sticky=True) if label and not show_labels else None
         )
 
+        confidence = str(row.get("_geocode_confidence", "high"))
+        approx = confidence not in ("high", "")
+        stroke_color = "#d62728" if approx else color
+        stroke_weight = 3 if approx else 2
+        stroke_dash = "6 4" if approx else None
+
         if scale_mode == "metric":
             shape = shape_for_icon(icon)
             # Circle is rotation-invariant → cheaper native folium.Circle.
@@ -126,8 +132,9 @@ def build_map(
                 folium.Circle(
                     location=[lat, lon],
                     radius=size_m,
-                    color=color,
-                    weight=2,
+                    color=stroke_color,
+                    weight=stroke_weight,
+                    dash_array=stroke_dash,
                     fill=True,
                     fill_color=color,
                     fill_opacity=0.6,
@@ -137,8 +144,9 @@ def build_map(
             else:
                 folium.Polygon(
                     locations=shape_ring_latlon(lat, lon, size_m, shape, rotation_deg),
-                    color=color,
-                    weight=2,
+                    color=stroke_color,
+                    weight=stroke_weight,
+                    dash_array=stroke_dash,
                     fill=True,
                     fill_color=color,
                     fill_opacity=0.6,
@@ -146,9 +154,12 @@ def build_map(
                     popup=popup,
                 ).add_to(m)
         else:
+            border = stroke_color if approx else None
             folium.Marker(
                 location=[lat, lon],
-                icon=_fa_divicon(icon, color, size=size_px, rotation_deg=rotation_deg),
+                icon=_fa_divicon(icon, color, size=size_px,
+                                 rotation_deg=rotation_deg,
+                                 border_color=border),
                 tooltip=hover_tooltip,
                 popup=popup,
             ).add_to(m)
@@ -228,7 +239,8 @@ def _label_divicon(text: str, font_px: int) -> folium.DivIcon:
 
 
 def _fa_divicon(
-    icon_name: str, color: str, size: int, rotation_deg: float = 0.0
+    icon_name: str, color: str, size: int, rotation_deg: float = 0.0,
+    border_color: str | None = None,
 ) -> folium.DivIcon:
     """A DivIcon that renders a single FA glyph in `color`, centered on the point.
 
@@ -237,6 +249,10 @@ def _fa_divicon(
     tooltips and popups still open on click.
     """
     rotate_css = f"transform:rotate({rotation_deg}deg);" if rotation_deg else ""
+    ring_css = (
+        f"box-shadow:0 0 0 3px {border_color};border-radius:50%;"
+        if border_color else ""
+    )
     html = (
         f'<div style="'
         f'font-size:{size}px;'
@@ -244,6 +260,7 @@ def _fa_divicon(
         f'color:{color};'
         f'text-align:center;'
         f'{rotate_css}'
+        f'{ring_css}'
         f'text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff,'
         f' -1px 1px 0 #fff, 1px 1px 0 #fff;'
         f'">'

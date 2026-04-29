@@ -58,6 +58,22 @@ def lookup(cache: dict[str, dict], address: str) -> tuple[float, float] | None:
     return float(lat), float(lon)
 
 
+def _confidence_from_raw(raw: dict) -> str:
+    """Derive geocode confidence from a Nominatim raw response.
+
+    * ``high``   – house-number-level match
+    * ``medium`` – street-level (road found, but not the exact building)
+    * ``low``    – only locality (village / town / city) resolved
+    """
+    address = raw.get("address", {})
+    if "house_number" in address:
+        return "high"
+    osm_class = raw.get("class", "")
+    if osm_class == "highway" or "road" in address:
+        return "medium"
+    return "low"
+
+
 def geocode_missing(
     addresses: Iterable[str],
     cache: dict[str, dict],
@@ -87,7 +103,7 @@ def geocode_missing(
     hits = 0
     for i, (key, addr) in enumerate(to_lookup):
         try:
-            loc = geocode(addr, timeout=10)
+            loc = geocode(addr, addressdetails=True, timeout=10)
         except Exception:
             loc = None
         if loc is not None:
@@ -95,6 +111,7 @@ def geocode_missing(
                 "lat": float(loc.latitude),
                 "lon": float(loc.longitude),
                 "display_name": str(loc.address),
+                "confidence": _confidence_from_raw(loc.raw),
             }
             hits += 1
         if on_progress is not None:
@@ -106,23 +123,32 @@ def apply_geocode_cache(canon: pd.DataFrame, cache: dict[str, dict]) -> int:
     """Fill coords on `needs_geocode` rows from `cache` (mutated in place).
 
     Returns the number of rows promoted from `needs_geocode` → `ok`.
+    Also sets ``_geocode_confidence`` from the cached entry so the map can
+    highlight approximate matches.
     """
     needs = canon["_status"] == STATUS_NEEDS_GEOCODE
     promoted = 0
     for idx in canon[needs].index:
-        coord = lookup(cache, str(canon.at[idx, "_address"]))
-        if coord is None:
+        address = str(canon.at[idx, "_address"])
+        if not address:
             continue
-        canon.at[idx, "_lat"] = coord[0]
-        canon.at[idx, "_lon"] = coord[1]
+        entry = cache.get(_normalize(address))
+        if entry is None:
+            continue
+        lat, lon = entry.get("lat"), entry.get("lon")
+        if lat is None or lon is None:
+            continue
+        canon.at[idx, "_lat"] = float(lat)
+        canon.at[idx, "_lon"] = float(lon)
         canon.at[idx, "_status"] = STATUS_OK
         canon.at[idx, "_status_reason"] = ""
+        canon.at[idx, "_geocode_confidence"] = entry.get("confidence", "")
         promoted += 1
     return promoted
 
 
 def enriched_csv_bytes(df: pd.DataFrame, cfg: Config, cache: dict[str, dict]) -> bytes:
-    """Return the original CSV with cached coords written back.
+    """Return the original CSV with cached coords and confidence written back.
 
     Prefers the mapped `latlong` column when empty; otherwise fills mapped
     `lat`+`lon`; if none of those are mapped, appends a new `latlong`
@@ -151,14 +177,24 @@ def enriched_csv_bytes(df: pd.DataFrame, cfg: Config, cache: dict[str, dict]) ->
         ll_col = "latlong"
         has_ll = True
 
+    conf_col = cols.get("geocode_confidence")
+    if not conf_col or conf_col not in out.columns:
+        conf_col = "geocode_confidence"
+        if conf_col not in out.columns:
+            out[conf_col] = ""
+
     for idx in out.index:
         addr = str(out.at[idx, ad_col]).strip()
         if not addr:
             continue
-        coord = lookup(cache, addr)
-        if coord is None:
+        entry = cache.get(_normalize(addr))
+        if entry is None:
             continue
-        lat_v, lon_v = coord
+        lat_v = entry.get("lat")
+        lon_v = entry.get("lon")
+        if lat_v is None or lon_v is None:
+            continue
+        lat_v, lon_v = float(lat_v), float(lon_v)
         if has_ll and not str(out.at[idx, ll_col]).strip():
             out.at[idx, ll_col] = f"{lat_v:.7f},{lon_v:.7f}"
         elif has_sep:
@@ -166,6 +202,9 @@ def enriched_csv_bytes(df: pd.DataFrame, cfg: Config, cache: dict[str, dict]) ->
                 out.at[idx, la_col] = f"{lat_v:.7f}"
             if not str(out.at[idx, lo_col]).strip():
                 out.at[idx, lo_col] = f"{lon_v:.7f}"
+        confidence = entry.get("confidence", "")
+        if confidence and not str(out.at[idx, conf_col]).strip():
+            out.at[idx, conf_col] = confidence
     return _to_csv_bytes(out, cfg)
 
 
