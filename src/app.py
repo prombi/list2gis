@@ -92,7 +92,7 @@ def main() -> None:
 
     # Sidebar — preset editing.
     _sidebar_column_mapping(cfg, header, scope)
-    _sidebar_categories(cfg, scope)
+    _sidebar_categories(cfg, df, scope)
     _sidebar_default_style(cfg, scope)
     basemap = _sidebar_rendering(cfg, header, scope)
     # Download button last so it captures all edits above in the same render.
@@ -234,18 +234,18 @@ def _sidebar_file_info(source_name: str, csv_opts: dict) -> None:
 
 
 def _sidebar_column_mapping(cfg: Config, header: list[str], scope: str) -> None:
-    st.sidebar.header("Column mapping")
-    options = [NONE_LABEL] + header
-    for field in CANONICAL_FIELDS:
-        current = cfg["columns"].get(field)
-        default_idx = options.index(current) if current in header else 0
-        chosen = st.sidebar.selectbox(
-            field,
-            options=options,
-            index=default_idx,
-            key=f"col_{field}__{scope}",
-        )
-        cfg["columns"][field] = None if chosen == NONE_LABEL else chosen  # type: ignore[literal-required]
+    with st.sidebar.expander("Column mapping", expanded=True):
+        options = [NONE_LABEL] + header
+        for field in CANONICAL_FIELDS:
+            current = cfg["columns"].get(field)
+            default_idx = options.index(current) if current in header else 0
+            chosen = st.selectbox(
+                field,
+                options=options,
+                index=default_idx,
+                key=f"col_{field}__{scope}",
+            )
+            cfg["columns"][field] = None if chosen == NONE_LABEL else chosen  # type: ignore[literal-required]
 
 
 def _ensure_category_uids(cfg: Config) -> None:
@@ -256,20 +256,62 @@ def _ensure_category_uids(cfg: Config) -> None:
             cat["_uid"] = uuid.uuid4().hex[:8]  # type: ignore[typeddict-item]
 
 
-def _sidebar_categories(cfg: Config, scope: str) -> None:
+_CATEGORY_PALETTE = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+]
+
+
+def _next_category_color(cfg: Config) -> str:
+    used = {cat.get("color", "") for cat in cfg["categories"]}
+    for color in _CATEGORY_PALETTE:
+        if color not in used:
+            return color
+    return _CATEGORY_PALETTE[len(cfg["categories"]) % len(_CATEGORY_PALETTE)]
+
+
+def _data_category_values(df: pd.DataFrame, cfg: Config) -> list[str]:
+    cat_col = cfg["columns"].get("category")
+    if not cat_col or cat_col not in df.columns:
+        return []
+    raw = df[cat_col].astype(str).str.strip()
+    return sorted(v for v in raw.unique() if v)
+
+
+def _sidebar_categories(cfg: Config, df: pd.DataFrame, scope: str) -> None:
     st.sidebar.header("Categories")
     _ensure_category_uids(cfg)
+
+    all_values = _data_category_values(df, cfg)
+    used_values = {cat["value"] for cat in cfg["categories"] if cat["value"]}
 
     to_remove: list[int] = []
     for i, cat in enumerate(cfg["categories"]):
         uid = cat["_uid"]  # type: ignore[typeddict-item]
-        title = cat.get("label") or cat.get("value") or f"Category {i + 1}"
-        with st.sidebar.expander(f"🎨 {title}", expanded=False):
-            cat["value"] = st.text_input(
+        value = cat.get("value", "")
+        label = cat.get("label", "")
+        if value and label and label != value:
+            title = f"{value} ({label})"
+        else:
+            title = value or label or f"Category {i + 1}"
+        with st.sidebar.expander(title, expanded=False):
+            other_used = used_values - {cat["value"]}
+            options = sorted(
+                (set(all_values) | ({cat["value"]} if cat["value"] else set()))
+                - other_used
+            )
+            current = cat.get("value", "")
+            val_index = options.index(current) if current in options else 0
+            cat["value"] = st.selectbox(
                 "Value",
-                value=cat.get("value", ""),
+                options=options,
+                index=val_index,
                 key=f"cat_value_{uid}",
-                help="Must match the category column value in the CSV",
+                help="Category value from the CSV data",
+            ) if options else st.text_input(
+                "Value",
+                value=current,
+                key=f"cat_value_{uid}",
             )
             cat["label"] = st.text_input(
                 "Label",
@@ -315,12 +357,18 @@ def _sidebar_categories(cfg: Config, scope: str) -> None:
     for idx in sorted(to_remove, reverse=True):
         cfg["categories"].pop(idx)
 
-    if st.sidebar.button("➕ Add category", key=f"cat_add__{scope}"):
+    available = sorted(set(all_values) - used_values)
+    if st.sidebar.button(
+        "➕ Add category",
+        key=f"cat_add__{scope}",
+        disabled=not available,
+        help="All data values are already assigned" if not available else None,
+    ):
         cfg["categories"].append({  # type: ignore[typeddict-item]
             "_uid": uuid.uuid4().hex[:8],
-            "value": "",
-            "label": "",
-            "color": "#1f77b4",
+            "value": available[0],
+            "label": available[0],
+            "color": _next_category_color(cfg),
             "icon": "circle",
             "size_m": DEFAULT_CATEGORY_SIZE_M,
             "rotation_deg": 0.0,
