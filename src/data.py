@@ -32,9 +32,10 @@ def detect_csv_options(source: str | Path | IO[bytes]) -> CsvOptions:
         raw = source.read(4096)
         source.seek(0)
 
-    encoding = "utf-8"
+    # utf-8-sig strips the BOM (0xEF BB BF) that Excel adds to UTF-8 exports.
+    encoding = "utf-8-sig"
     try:
-        text = raw.decode("utf-8")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         encoding = "cp1252"
         text = raw.decode("cp1252", errors="replace")

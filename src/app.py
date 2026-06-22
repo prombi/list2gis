@@ -82,6 +82,9 @@ def main() -> None:
             preset, source_name, header0, csv_opts
         )
     cfg: Config = st.session_state[cfg_key]
+    # Always apply freshly detected options so a preset saved for a different
+    # encoding (e.g. cp1252) never garbles a UTF-8 file uploaded later.
+    cfg["csv_options"].update(csv_opts)
 
     try:
         df = read_csv(io.BytesIO(source_bytes), **cfg["csv_options"])

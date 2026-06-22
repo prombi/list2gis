@@ -2,7 +2,7 @@
   "name": "Example-Adressen-Kategorien",
   "csv_options": {
     "delimiter": ";",
-    "encoding": "utf-8"
+    "encoding": "utf-8-sig"
   },
   "columns": {
     "id": "Schlüssel",
