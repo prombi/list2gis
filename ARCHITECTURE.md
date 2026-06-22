@@ -177,18 +177,24 @@ List2GIS/
 **v1 (first working build)**
 - Load `Example-Adressen-Kategorien.csv`, show markers on OSM basemap, switch to Luftbild/Topo, export KML.
 
-**v1.1**
+**v1.1** (Done)
 - Geocoding fallback for address-only rows, with cache and progress.
 - Category editor UI + save/load config.
 
-**v1.2**
-- PDF export of current view.
+**v1.3** (TBD)
+Fix the following issues:
+- 2026/06/12: In "Screen-constant" mode, the exported KML shows labels in front of the icons, despite "Show labels on map" is turned off. When labels are --none--, the category is shown instead of the label. This is not the case for 'Metric' mode. --> needs to be checked and fixed.
 
-**v2**
+**v2** (TBD)
+- **In-app marker editing**: click a marker to nudge its lat/lon (via `streamlit-folium` click events) and write the new coords back to the CSV. Closes the loop without round-tripping through Google Earth Pro / QGIS, since BayernAtlas treats imported KML as a read-only overlay.
+
+### Open issues / potential next steps
+- PDF export of current view.
+- Check: How is opacity/transparency being defined? Maybe let the user define it per category.
 - Legend on map + in PDF.
 - BKG/Bayern geocoder option.
 - GeoJSON / GPX / EWKT export if needed.
-- **In-app marker editing**: click a marker to nudge its lat/lon (via `streamlit-folium` click events) and write the new coords back to the CSV. Closes the loop without round-tripping through Google Earth Pro / QGIS, since BayernAtlas treats imported KML as a read-only overlay.
+
 
 ## 10. Resolved decisions
 
