@@ -81,14 +81,8 @@ def build_canonical(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     conf_col = cols.get("geocode_confidence")
     if conf_col and conf_col in df.columns:
         has_conf = df[conf_col].astype(str).str.strip() != ""
-        # Only carry over the CSV confidence for rows that have no explicit
-        # coordinates — i.e. rows that still need geocoding or couldn't be
-        # resolved.  Rows already resolved from the CSV (STATUS_OK) keep
-        # "high" so a stale geocode_confidence column from a previous
-        # enriched-CSV export never re-applies the old approximate styling.
-        no_explicit_coords = status != STATUS_OK
-        out.loc[has_conf & no_explicit_coords, "_geocode_confidence"] = (
-            df.loc[has_conf & no_explicit_coords, conf_col].astype(str).str.strip()
+        out.loc[has_conf, "_geocode_confidence"] = (
+            df.loc[has_conf, conf_col].astype(str).str.strip()
         )
 
     out["_popup_html"] = _build_popups(df, config["hover_columns"])
